@@ -486,7 +486,6 @@ def train_ppo(env_name="Pendulum-v1",
 ###########################################
 
 if __name__ == "__main__":
-    train_ppo(total_seasons=200, learning_rate=3e-4)
-    train_ppo(total_seasons=400, learning_rate=2e-4)
+    train_ppo(total_seasons=400, learning_rate=2.5e-4)
     train_ppo(total_seasons=500, learning_rate=1e-4)
     train_ppo(total_seasons=600, learning_rate=2e-5)

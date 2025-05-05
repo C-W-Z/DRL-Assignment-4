@@ -6,3 +6,4 @@ drl-hw4
 *.png
 *.pt
 *.npy
+!final.pt
