@@ -1,22 +1,36 @@
 import gymnasium as gym
 import numpy as np
 import torch
-from train import ActorCritic
+from Policy import ActorCritic
 
-# Do not modify the input of the 'act' function and the '__init__' function.
+class RunningStat:
+    def __init__(self, shape, mean, std, count):
+        self.mean = mean
+        self.std = std
+        self.count = count
+        self.shape = shape
+
+    def normalize(self, x):
+        return (x - self.mean) / (self.std + 1e-8)
+
 class Agent(object):
     """PPO Agent for Pendulum-v1."""
     def __init__(self):
         self.action_space = gym.spaces.Box(-2.0, 2.0, (1,), np.float32)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = ActorCritic(state_dim=3, action_dim=1).to(self.device)
-        # 載入訓練好的模型參數
-        self.model.load_state_dict(torch.load("ppo_pendulum.pth", weights_only=False))
+        self.model = ActorCritic(state_dim=3, action_dim=1, lower_bound=-2.0, upper_bound=2.0, device=self.device).to(self.device)
+        self.model.actor.load_state_dict(torch.load("ppo_actor.pth"))
         self.model.eval()
+        # 載入正則化參數
+        mean = np.load("running_stat_mean.npy")
+        std = np.load("running_stat_std.npy")
+        count = np.load("running_stat_count.npy")
+        self.running_stat = RunningStat((3,), mean, std, count)
 
     def act(self, observation):
         with torch.no_grad():
-            state = torch.FloatTensor(observation).to(self.device)
-            mean, _, _ = self.model(state.unsqueeze(0))
-            action = mean.cpu().numpy()[0]
+            state = self.running_stat.normalize(observation)
+            state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+            action, _ = self.model(state)
+            action = action.cpu().numpy()[0]
         return action
