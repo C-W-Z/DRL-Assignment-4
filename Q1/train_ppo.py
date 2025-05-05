@@ -262,7 +262,7 @@ def load_random_state(state):
     if state['cuda'] is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state(state['cuda'])
 
-def save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward, mean_rewards, log_dir, checkpoint_path):
+def save_checkpoint(policy, buffer, running_stat, episode_count, mean_rewards, log_dir, checkpoint_path):
     checkpoint = {
         'actor_state_dict': policy.actor.state_dict(),
         'critic_state_dict': policy.critic.state_dict(),
@@ -273,7 +273,6 @@ def save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward,
         'buffer_start_index': buffer.start_index,
         'buffer_rng': buffer.rng.__getstate__(),
         'episode_count': episode_count,
-        'episode_reward': episode_reward,
         'mean_rewards': mean_rewards,
         'random_state': save_random_state(),
         'running_stat': {
@@ -288,7 +287,7 @@ def save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward,
 
 def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
     if not os.path.exists(checkpoint_path):
-        return None, None, None, None, None
+        return None, None, None
     checkpoint = torch.load(checkpoint_path, weights_only=False)
 
     if policy is not None:
@@ -309,12 +308,38 @@ def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
         load_random_state(checkpoint['random_state'])
 
     log_dir = checkpoint.get('log_dir', 'Log')
-    return (checkpoint['episode_count'], checkpoint['episode_reward'],
-            checkpoint['mean_rewards'], log_dir)
+    return (checkpoint['episode_count'], checkpoint['mean_rewards'], log_dir)
 
 ###########################################
 # Training Function
 ###########################################
+
+def learn(policy: PPOPolicy, buffer: PPOBuffer, num_epochs: int, batch_size: int, writer: SummaryWriter, episode_count: int):
+    for _ in range(num_epochs):
+        batch_data = buffer.get_mini_batch(batch_size)
+        for data in batch_data:
+            obs_batch = torch.tensor(data['obs'], dtype=torch.float32)
+            action_batch = torch.tensor(data['action'], dtype=torch.float32)
+            log_prob_batch = torch.tensor(data['log_prob'], dtype=torch.float32)
+            advantage_batch = torch.tensor(data['advantage'], dtype=torch.float32)
+            return_batch = torch.tensor(data['return'], dtype=torch.float32)
+
+            # Normalize advantages
+            advantage_batch = (advantage_batch - advantage_batch.mean()) / (advantage_batch.std() + 1e-8)
+
+            # Update
+            pi_loss, v_loss, total_loss, approx_kl, std = policy.update(
+                obs_batch, action_batch, log_prob_batch, advantage_batch, return_batch
+            )
+
+            # Log metrics
+            writer.add_scalar("train/pi_loss", pi_loss.item(), episode_count)
+            writer.add_scalar("train/v_loss", v_loss.item(), episode_count)
+            writer.add_scalar("train/total_loss", total_loss.item(), episode_count)
+            writer.add_scalar("train/approx_kl", approx_kl.item(), episode_count)
+            writer.add_scalar("train/std", std.mean().item(), episode_count)
+
+    return approx_kl.item(), std.mean().item()
 
 def train_ppo(env_name="Pendulum-v1",
               num_episodes_per_update=10,
@@ -341,8 +366,7 @@ def train_ppo(env_name="Pendulum-v1",
     upper_bound = env.action_space.high
 
     # Initialize TensorBoard
-    checkpoint_data = load_checkpoint(None, None, None, checkpoint_path)
-    log_dir = checkpoint_data[4]
+    episode_count, _, log_dir = load_checkpoint(None, None, None, checkpoint_path)
     if log_dir is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = os.path.join("Log", f"run_{timestamp}")
@@ -370,97 +394,71 @@ def train_ppo(env_name="Pendulum-v1",
     running_stat = RunningStat((state_dim,))
 
     # Training data
-    state, _ = env.reset()
+
     episode_rewards = []
-    episode_reward = 0
-    episode_count = 0
-    episodes_collected = 0
     mean_rewards = []
-    start_episode = 0
 
     # Load checkpoint (if exists)
-    if checkpoint_data[0] is not None:
-        start_episode, episode_reward, mean_rewards, _ = load_checkpoint(
-            policy, buffer, running_stat, checkpoint_path)
-        print(f"Resumed training from checkpoint at episode={start_episode}")
+    if episode_count is not None:
+        episode_count, mean_rewards, _ = load_checkpoint(policy, buffer, running_stat, checkpoint_path)
+        print(f"Resumed training from checkpoint at episode={episode_count}")
+    else:
+        episode_count = 0
 
     while episode_count < total_episodes:
-        # Normalize state
-        running_stat.update(state)
-        state_normalized = running_stat.normalize(state)
-        state_tensor = torch.FloatTensor(state_normalized).unsqueeze(0).to(policy.device)
 
-        # Collect data
-        action, log_prob, value = policy.get_action(state_tensor)
-        clipped_action = np.clip(action, lower_bound, upper_bound)
-        next_state, reward, terminated, truncated, _ = env.step(clipped_action)
-        done = terminated or truncated
-        episode_reward += reward
+        state, _ = env.reset()
+        episode_reward = 0
+        done = False
 
-        # Store data
-        buffer.record(state_normalized, action, reward, value, log_prob)
+        while not done:
+            # Normalize state
+            running_stat.update(state)
+            state_normalized = running_stat.normalize(state)
+            state_tensor = torch.FloatTensor(state_normalized).unsqueeze(0).to(policy.device)
 
-        state = next_state
+            # Collect data
+            action, log_prob, value = policy.get_action(state_tensor)
+            clipped_action = np.clip(action, lower_bound, upper_bound)
+            next_state, reward, terminated, truncated, _ = env.step(clipped_action)
+            done = terminated or truncated
+            episode_reward += reward
 
-        if done:
-            episode_count += 1
-            episodes_collected += 1
-            episode_rewards.append(episode_reward)
+            # Store data
+            buffer.record(state_normalized, action, reward, value, log_prob)
 
-            # Process trajectory for the episode
-            next_state_normalized = running_stat.normalize(state)
-            last_value = policy.get_values(torch.FloatTensor(next_state_normalized).unsqueeze(0).to(policy.device))
-            buffer.process_trajectory(
-                gamma=gamma,
-                gae_lam=gae_lam,
-                is_last_terminal=done,
-                last_v=last_value
-            )
+            state = next_state
 
-            # Reset environment
-            state, _ = env.reset()
-            episode_reward = 0
+        episode_count += 1
+        episode_rewards.append(episode_reward)
 
-            # Update policy after collecting enough episodes
-            if episodes_collected >= num_episodes_per_update:
-                for _ in range(num_epochs):
-                    batch_data = buffer.get_mini_batch(batch_size)
-                    for data in batch_data:
-                        obs_batch = torch.tensor(data['obs'], dtype=torch.float32)
-                        action_batch = torch.tensor(data['action'], dtype=torch.float32)
-                        log_prob_batch = torch.tensor(data['log_prob'], dtype=torch.float32)
-                        advantage_batch = torch.tensor(data['advantage'], dtype=torch.float32)
-                        return_batch = torch.tensor(data['return'], dtype=torch.float32)
+        # Process trajectory for the episode
+        next_state_normalized = running_stat.normalize(state)
+        last_value = policy.get_values(torch.FloatTensor(next_state_normalized).unsqueeze(0).to(policy.device))
+        buffer.process_trajectory(
+            gamma=gamma,
+            gae_lam=gae_lam,
+            is_last_terminal=done,
+            last_v=last_value
+        )
 
-                        # Normalize advantages
-                        advantage_batch = (advantage_batch - advantage_batch.mean()) / (advantage_batch.std() + 1e-8)
+        # Update policy after collecting enough episodes
+        if episode_count % num_episodes_per_update == 0:
+            approx_kl, std = learn(policy, buffer, num_epochs, batch_size, writer, episode_count)
 
-                        # Update
-                        pi_loss, v_loss, total_loss, approx_kl, std = policy.update(
-                            obs_batch, action_batch, log_prob_batch, advantage_batch, return_batch
-                        )
+            # Log returns
+            mean_reward = np.mean(episode_rewards[-num_episodes_per_update:])
+            mean_rewards.append(mean_reward)
+            writer.add_scalar("misc/ep_reward_mean", mean_reward, episode_count)
+            print(f"Episode {episode_count} | Avg Reward {mean_reward:.2f} | KL {approx_kl:.4f} | STD {std:.4f}")
 
-                        # Log metrics
-                        writer.add_scalar("train/pi_loss", pi_loss.item(), episode_count)
-                        writer.add_scalar("train/v_loss", v_loss.item(), episode_count)
-                        writer.add_scalar("train/total_loss", total_loss.item(), episode_count)
-                        writer.add_scalar("train/approx_kl", approx_kl.item(), episode_count)
-                        writer.add_scalar("train/std", std.mean().item(), episode_count)
+            # Clear buffer and reset episode collection
+            buffer.clear()
 
-                # Log returns
-                mean_reward = np.mean(episode_rewards[-episodes_collected:])
-                mean_rewards.append(mean_reward)
-                writer.add_scalar("misc/ep_reward_mean", mean_reward, episode_count)
-                print(f"Episode {episode_count} | Mean Reward {mean_reward:.2f} | KL {approx_kl.item():.4f} | STD {std.mean().item():.4f}")
-
-                # Clear buffer and reset episode collection
-                buffer.clear()
-                episodes_collected = 0
-
-            # Save checkpoint
-            if episode_count % save_interval == 0:
-                save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward,
-                                mean_rewards, log_dir, checkpoint_path)
+        # Save checkpoint
+        if episode_count % save_interval == 0:
+            save_checkpoint(policy, buffer, running_stat, episode_count,
+                            mean_rewards, log_dir, checkpoint_path)
 
     # Plot reward curve
     plt.figure(figsize=(8, 6))
@@ -471,7 +469,7 @@ def train_ppo(env_name="Pendulum-v1",
     plt.savefig("episode_reward.png")
 
     # Save final model
-    save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward,
+    save_checkpoint(policy, buffer, running_stat, episode_count,
                     mean_rewards, log_dir, checkpoint_path)
 
     writer.close()
@@ -482,6 +480,7 @@ def train_ppo(env_name="Pendulum-v1",
 ###########################################
 
 if __name__ == "__main__":
-    train_ppo(total_episodes=4000, learning_rate=2.5e-4)  # Adjusted for episode-based training
-    train_ppo(total_episodes=5000, learning_rate=1e-4)
-    train_ppo(total_episodes=6000, learning_rate=2e-5)
+    checkpoint_path="checkpoint.pt"
+    train_ppo(total_episodes=4000, learning_rate=2.5e-4, checkpoint_path=checkpoint_path) # 運氣好2000 episode即可
+    train_ppo(total_episodes=5000, learning_rate=1e-4, checkpoint_path=checkpoint_path)   # 運氣好2500
+    train_ppo(total_episodes=6000, learning_rate=2e-5, checkpoint_path=checkpoint_path)   # 運氣好3000
