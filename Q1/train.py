@@ -63,10 +63,11 @@ def load_random_state(state):
         torch.cuda.set_rng_state(state['cuda'])
 
 # 保存檢查點
-def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, log_dir, checkpoint_path):
+def save_checkpoint(policy: PPOPolicy, buffer: PPOBuffer, running_stat: RunningStat, t, season_count, episode_reward, episode_count, mean_rewards, log_dir, checkpoint_path):
     checkpoint = {
         'actor_state_dict': policy.model.actor.state_dict(),
         'critic_state_dict': policy.model.critic.state_dict(),
+        'log_std': policy.log_std,
         'optimizer_state_dict': policy.optimizer.state_dict(),
         'buffer': buffer.get_data(),
         'buffer_pointer': buffer.pointer,
@@ -89,7 +90,7 @@ def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_rewar
     print(f"Checkpoint saved at {checkpoint_path}")
 
 # 載入檢查點
-def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
+def load_checkpoint(policy: PPOPolicy, buffer, running_stat, checkpoint_path):
     if not os.path.exists(checkpoint_path):
         return None, None, None, None, None, None
     checkpoint = torch.load(checkpoint_path, weights_only=False)
@@ -98,6 +99,8 @@ def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
     if policy is not None:
         policy.model.actor.load_state_dict(checkpoint['actor_state_dict'])
         policy.model.critic.load_state_dict(checkpoint['critic_state_dict'])
+        policy.log_std = checkpoint['log_std']
+        policy.optimizer = optim.Adam(policy.parameters(), lr=LEARNING_RATE)
         policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     if buffer is not None:
         buffer.load_data(checkpoint['buffer'], checkpoint['buffer_pointer'], checkpoint['buffer_start_index'])
