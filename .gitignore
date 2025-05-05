@@ -3,3 +3,6 @@ drl-hw4
 *__pycache__*
 *.pth
 *Log*
+*.png
+*.pt
+*.npy

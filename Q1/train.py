@@ -8,9 +8,7 @@ import matplotlib.pyplot as plt
 from Policy import PPOPolicy
 from PPOBuffer import PPOBuffer
 import os
-import signal
 import random
-import pickle
 
 # 超參數
 NUM_STEPS = 2048
@@ -19,12 +17,13 @@ TOTAL_TIMESTEPS = NUM_STEPS * 1000
 GAMMA = 0.99
 GAE_LAM = 0.95
 NUM_EPOCHS = 10
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 2.5e-4
 CLIP_RANGE = 0.2
 VALUE_COEFF = 0.5
 ENTROPY_COEFF = 0.01
 MAX_GRAD_NORM = 0.5
 INITIAL_STD = 1.0
+SAVE_INTERVAL = NUM_STEPS * 10
 CHECKPOINT_PATH = "checkpoint.pt"
 
 # 狀態正則化
@@ -104,27 +103,6 @@ def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
     return (checkpoint['t'], checkpoint['season_count'], checkpoint['episode_reward'],
             checkpoint['episode_count'], checkpoint['mean_rewards'])
 
-# 處理中斷信號
-class SignalHandler:
-    def __init__(self, policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, checkpoint_path):
-        self.policy = policy
-        self.buffer = buffer
-        self.running_stat = running_stat
-        self.t = t
-        self.season_count = season_count
-        self.episode_reward = episode_reward
-        self.episode_count = episode_count
-        self.mean_rewards = mean_rewards
-        self.checkpoint_path = checkpoint_path
-        self.interrupted = False
-
-    def handle(self, signum, frame):
-        print("\nReceived interrupt signal. Saving checkpoint...")
-        self.interrupted = True
-        save_checkpoint(self.policy, self.buffer, self.running_stat, self.t, self.season_count,
-                        self.episode_reward, self.episode_count, self.mean_rewards, self.checkpoint_path)
-        exit(0)
-
 def main():
     # 初始化環境
     env = gym.make("Pendulum-v1")
@@ -171,13 +149,7 @@ def main():
         start_t, season_count, episode_reward, episode_count, mean_rewards = checkpoint_data
         print(f"Resumed training from checkpoint at t={start_t}, season={season_count}")
 
-    # 設置中斷信號處理
-    signal_handler = SignalHandler(policy, buffer, running_stat, 0, season_count, episode_reward,
-                                  episode_count, mean_rewards, CHECKPOINT_PATH)
-    signal.signal(signal.SIGINT, signal_handler.handle)
-
     for t in range(start_t, TOTAL_TIMESTEPS):
-        signal_handler.t = t  # 更新信號處理器的時間步
         # 正則化狀態
         running_stat.update(state)
         state_normalized = running_stat.normalize(state)
@@ -251,7 +223,7 @@ def main():
                 print(f"Season {season_count}: Mean Reward = {mean_reward:.2f}, KL = {approx_kl.item():.4f}, Std = {std.mean().item():.4f}")
                 episode_count = 0
 
-        if (t + 1) % (NUM_STEPS * 100) == 0:
+        if (t + 1) % SAVE_INTERVAL == 0:
             # 保存檢查點
             save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
                             episode_count, mean_rewards, CHECKPOINT_PATH)
