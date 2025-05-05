@@ -118,22 +118,29 @@ class PPOPolicy(nn.Module):
 # Buffer Implementation
 ###########################################
 
-def compute_return_advantage(rewards, values, is_last_terminal, gamma, gae_lambda, last_value):
-    N = rewards.shape[0]
-    advantages = np.zeros((N, 1), dtype=np.float32)
-    tmp = 0.0
-    for k in reversed(range(N)):
-        if k == N - 1:
-            next_non_terminal = 1 - is_last_terminal
-            next_values = last_value
-        else:
-            next_non_terminal = 1
-            next_values = values[k + 1]
-        delta = rewards[k] + gamma * next_non_terminal * next_values - values[k]
-        tmp = delta + gamma * gae_lambda * next_non_terminal * tmp
-        advantages[k] = tmp
+def compute_gae(rewards: np.ndarray, values: np.ndarray, last_value: float, is_last_terminal: bool, gamma: float, gae_lambda: float):
+    rewards = np.array(rewards, dtype=np.float32)[:, 0]  # [N, 1] -> [N]
+    values = np.array(values, dtype=np.float32)[:, 0]    # [N, 1] -> [N]
+    N = len(rewards)
+
+    # Initialize arrays
+    deltas = np.zeros(N, dtype=np.float32)
+    advantages = np.zeros(N, dtype=np.float32)
+
+    # Compute deltas
+    next_values = np.concatenate([values[1:], [last_value]])  # [N]
+    next_non_terminal = np.ones(N, dtype=np.float32)
+    if is_last_terminal:
+        next_non_terminal[-1] = 0
+    deltas = rewards + gamma * next_values * next_non_terminal - values
+
+    # Vectorized GAE computation (loop for sequential dependency)
+    advantages[-1] = deltas[-1]
+    for t in reversed(range(N-1)):
+        advantages[t] = deltas[t] + gamma * gae_lambda * next_non_terminal[t] * advantages[t+1]
+
     returns = advantages + values
-    return returns, advantages
+    return returns[:, np.newaxis], advantages[:, np.newaxis]  # [N] -> [N, 1]
 
 class PPOBuffer:
     def __init__(self, obs_dim, action_dim, buffer_capacity, seed=None):
@@ -168,8 +175,8 @@ class PPOBuffer:
     def process_trajectory(self, gamma, gae_lam, is_last_terminal, last_v):
         path_slice = slice(self.start_index, self.pointer)
         values_t = self.values[path_slice]
-        self.returns[path_slice], self.advantage[path_slice] = compute_return_advantage(
-            self.reward[path_slice], values_t, is_last_terminal, gamma, gae_lam, last_v
+        self.returns[path_slice], self.advantage[path_slice] = compute_gae(
+            self.reward[path_slice], values_t, last_v, is_last_terminal, gamma, gae_lam
         )
         self.start_index = self.pointer
 
@@ -419,7 +426,7 @@ def train_ppo(env_name="Pendulum-v1",
         # Update policy
         if (t + 1) % num_steps == 0:
             season_count += 1
-            for epoch in range(num_epochs):
+            for _ in range(num_epochs):
                 batch_data = buffer.get_mini_batch(batch_size)
                 for data in batch_data:
                     obs_batch = torch.tensor(data['obs'], dtype=torch.float32)
@@ -451,17 +458,13 @@ def train_ppo(env_name="Pendulum-v1",
                 mean_reward = np.mean(episode_rewards[-episode_count:])
                 mean_rewards.append(mean_reward)
                 writer.add_scalar("misc/ep_reward_mean", mean_reward, t)
-                print(f"Season {season_count}: Mean Reward = {mean_reward:.2f}, KL = {approx_kl.item():.4f}, Std = {std.mean().item():.4f}")
+                print(f"Season {season_count} | Mean Reward {mean_reward:.2f} | KL {approx_kl.item():.4f} | STD {std.mean().item():.4f}")
                 episode_count = 0
 
         if (t + 1) % (save_interval * num_steps) == 0:
             # Save checkpoint
             save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
-                          episode_count, mean_rewards, log_dir, checkpoint_path)
-
-    # Save final model
-    torch.save(policy.actor.state_dict(), "ppo_actor.pth")
-    torch.save(policy.critic.state_dict(), "ppo_critic.pth")
+                            episode_count, mean_rewards, log_dir, checkpoint_path)
 
     # Plot reward curve
     plt.figure(figsize=(8, 6))
@@ -471,21 +474,18 @@ def train_ppo(env_name="Pendulum-v1",
     plt.grid(True)
     plt.savefig("season_reward.png")
 
-    # Save normalization parameters
-    np.save("running_stat_mean.npy", running_stat.mean)
-    np.save("running_stat_std.npy", running_stat.std)
-    np.save("running_stat_count.npy", running_stat.count)
+    # Save final model
+    save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
+                    episode_count, mean_rewards, log_dir, checkpoint_path)
 
     writer.close()
     env.close()
-
-    return policy
 
 ###########################################
 # Main Function
 ###########################################
 
 if __name__ == "__main__":
-    train_ppo(total_seasons=400, learning_rate=2.5e-4)
-    train_ppo(total_seasons=500, learning_rate=1e-4)
-    train_ppo(total_seasons=600, learning_rate=2e-5)
+    train_ppo(total_seasons=400, learning_rate=2.5e-4) # 運氣好200即可
+    train_ppo(total_seasons=500, learning_rate=1e-4)   # 運氣好250
+    train_ppo(total_seasons=600, learning_rate=2e-5)   # 運氣好300
