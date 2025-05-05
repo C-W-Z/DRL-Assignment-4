@@ -9,6 +9,7 @@ from Policy import PPOPolicy
 from PPOBuffer import PPOBuffer
 import os
 import random
+import datetime
 
 # 超參數
 NUM_STEPS = 2048
@@ -62,7 +63,7 @@ def load_random_state(state):
         torch.cuda.set_rng_state(state['cuda'])
 
 # 保存檢查點
-def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, checkpoint_path):
+def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, log_dir, checkpoint_path):
     checkpoint = {
         'actor_state_dict': policy.model.actor.state_dict(),
         'critic_state_dict': policy.model.critic.state_dict(),
@@ -81,27 +82,38 @@ def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_rewar
             'mean': running_stat.mean,
             'std': running_stat.std,
             'count': running_stat.count
-        }
+        },
+        'log_dir': log_dir
     }
-    torch.save(checkpoint, checkpoint_path, pickle_protocol=4)
+    torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
 # 載入檢查點
 def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
     if not os.path.exists(checkpoint_path):
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     checkpoint = torch.load(checkpoint_path, weights_only=False)
-    policy.model.actor.load_state_dict(checkpoint['actor_state_dict'])
-    policy.model.critic.load_state_dict(checkpoint['critic_state_dict'])
-    policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    buffer.load_data(checkpoint['buffer'], checkpoint['buffer_pointer'], checkpoint['buffer_start_index'])
-    buffer.rng.__setstate__(checkpoint['buffer_rng'])
-    running_stat.mean = checkpoint['running_stat']['mean']
-    running_stat.std = checkpoint['running_stat']['std']
-    running_stat.count = checkpoint['running_stat']['count']
-    load_random_state(checkpoint['random_state'])
+
+    # If policy, buffer, or running_stat are provided, load their states
+    if policy is not None:
+        policy.model.actor.load_state_dict(checkpoint['actor_state_dict'])
+        policy.model.critic.load_state_dict(checkpoint['critic_state_dict'])
+        policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    if buffer is not None:
+        buffer.load_data(checkpoint['buffer'], checkpoint['buffer_pointer'], checkpoint['buffer_start_index'])
+        buffer.rng.__setstate__(checkpoint['buffer_rng'])
+    if running_stat is not None:
+        running_stat.mean = checkpoint['running_stat']['mean']
+        running_stat.std = checkpoint['running_stat']['std']
+        running_stat.count = checkpoint['running_stat']['count']
+
+    # Always load random state if present
+    if 'random_state' in checkpoint:
+        load_random_state(checkpoint['random_state'])
+
+    log_dir = checkpoint.get('log_dir', 'Log')
     return (checkpoint['t'], checkpoint['season_count'], checkpoint['episode_reward'],
-            checkpoint['episode_count'], checkpoint['mean_rewards'])
+            checkpoint['episode_count'], checkpoint['mean_rewards'], log_dir)
 
 def main():
     # 初始化環境
@@ -112,9 +124,15 @@ def main():
     upper_bound = env.action_space.high
 
     # 初始化 TensorBoard
-    if not os.path.exists("Log"):
-        os.makedirs("Log")
-    writer = SummaryWriter("Log")
+    checkpoint_data = load_checkpoint(None, None, None, CHECKPOINT_PATH)
+    log_dir = checkpoint_data[5]
+    if log_dir is None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = os.path.join("Log", f"run_{timestamp}")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    writer = SummaryWriter(log_dir)
+    print(f"Logging to TensorBoard at {log_dir}")
 
     # 初始化緩衝區和策略
     buffer = PPOBuffer(state_dim, action_dim, NUM_STEPS)
@@ -144,9 +162,9 @@ def main():
     start_t = 0
 
     # 載入檢查點（如果存在）
-    checkpoint_data = load_checkpoint(policy, buffer, running_stat, CHECKPOINT_PATH)
     if checkpoint_data[0] is not None:
-        start_t, season_count, episode_reward, episode_count, mean_rewards = checkpoint_data
+        start_t, season_count, episode_reward, episode_count, mean_rewards, _ = load_checkpoint(
+            policy, buffer, running_stat, CHECKPOINT_PATH)
         print(f"Resumed training from checkpoint at t={start_t}, season={season_count}")
 
     for t in range(start_t, TOTAL_TIMESTEPS):
@@ -226,7 +244,7 @@ def main():
         if (t + 1) % SAVE_INTERVAL == 0:
             # 保存檢查點
             save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
-                            episode_count, mean_rewards, CHECKPOINT_PATH)
+                            episode_count, mean_rewards, log_dir, CHECKPOINT_PATH)
 
     # 保存最終模型
     torch.save(policy.model.actor.state_dict(), "ppo_actor.pth")
