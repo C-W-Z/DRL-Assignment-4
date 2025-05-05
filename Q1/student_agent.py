@@ -19,7 +19,7 @@ class Agent(object):
         self.action_space = gym.spaces.Box(-2.0, 2.0, (1,), np.float32)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = ActorCritic(state_dim=3, action_dim=1, lower_bound=-2.0, upper_bound=2.0, device=self.device).to(self.device)
-        self.model.actor.load_state_dict(torch.load("ppo_actor.pth"))
+        self.model.actor.load_state_dict(torch.load("ppo_actor.pth", weights_only=False))
         self.model.eval()
         # 載入正則化參數
         mean = np.load("running_stat_mean.npy")

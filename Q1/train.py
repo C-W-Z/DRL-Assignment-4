@@ -8,27 +8,32 @@ import matplotlib.pyplot as plt
 from Policy import PPOPolicy
 from PPOBuffer import PPOBuffer
 import os
+import signal
+import random
+import pickle
 
 # 超參數
-NUM_STEPS = 2048  # 每次更新前的採集步數
-BATCH_SIZE = 64   # 小批量大小
-TOTAL_TIMESTEPS = NUM_STEPS * 500  # 總訓練步數
-GAMMA = 0.99      # 折扣因子
-GAE_LAM = 0.95    # GAE 參數
-NUM_EPOCHS = 10   # 每次更新的迭代次數
+NUM_STEPS = 2048
+BATCH_SIZE = 64
+TOTAL_TIMESTEPS = NUM_STEPS * 1000
+GAMMA = 0.99
+GAE_LAM = 0.95
+NUM_EPOCHS = 10
 LEARNING_RATE = 3e-4
 CLIP_RANGE = 0.2
 VALUE_COEFF = 0.5
 ENTROPY_COEFF = 0.01
 MAX_GRAD_NORM = 0.5
 INITIAL_STD = 1.0
+CHECKPOINT_PATH = "checkpoint.pt"
 
 # 狀態正則化
 class RunningStat:
-    def __init__(self, shape):
-        self.mean = np.zeros(shape, dtype=np.float32)
-        self.std = np.ones(shape, dtype=np.float32)
-        self.count = 0
+    def __init__(self, shape, mean=None, std=None, count=0):
+        self.shape = shape
+        self.mean = np.zeros(shape, dtype=np.float32) if mean is None else mean
+        self.std = np.ones(shape, dtype=np.float32) if std is None else std
+        self.count = count
 
     def update(self, x):
         self.count += 1
@@ -39,6 +44,86 @@ class RunningStat:
 
     def normalize(self, x):
         return (x - self.mean) / (self.std + 1e-8)
+
+# 保存隨機狀態
+def save_random_state():
+    return {
+        'python': random.getstate(),
+        'numpy': np.random.get_state(),
+        'torch': torch.get_rng_state(),
+        'cuda': torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+    }
+
+# 恢復隨機狀態
+def load_random_state(state):
+    random.setstate(state['python'])
+    np.random.set_state(state['numpy'])
+    torch.set_rng_state(state['torch'])
+    if state['cuda'] is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state(state['cuda'])
+
+# 保存檢查點
+def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, checkpoint_path):
+    checkpoint = {
+        'actor_state_dict': policy.model.actor.state_dict(),
+        'critic_state_dict': policy.model.critic.state_dict(),
+        'optimizer_state_dict': policy.optimizer.state_dict(),
+        'buffer': buffer.get_data(),
+        'buffer_pointer': buffer.pointer,
+        'buffer_start_index': buffer.start_index,
+        'buffer_rng': buffer.rng.__getstate__(),
+        't': t,
+        'season_count': season_count,
+        'episode_reward': episode_reward,
+        'episode_count': episode_count,
+        'mean_rewards': mean_rewards,
+        'random_state': save_random_state(),
+        'running_stat': {
+            'mean': running_stat.mean,
+            'std': running_stat.std,
+            'count': running_stat.count
+        }
+    }
+    torch.save(checkpoint, checkpoint_path, pickle_protocol=4)
+    print(f"Checkpoint saved at {checkpoint_path}")
+
+# 載入檢查點
+def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
+    if not os.path.exists(checkpoint_path):
+        return None, None, None, None, None
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    policy.model.actor.load_state_dict(checkpoint['actor_state_dict'])
+    policy.model.critic.load_state_dict(checkpoint['critic_state_dict'])
+    policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    buffer.load_data(checkpoint['buffer'], checkpoint['buffer_pointer'], checkpoint['buffer_start_index'])
+    buffer.rng.__setstate__(checkpoint['buffer_rng'])
+    running_stat.mean = checkpoint['running_stat']['mean']
+    running_stat.std = checkpoint['running_stat']['std']
+    running_stat.count = checkpoint['running_stat']['count']
+    load_random_state(checkpoint['random_state'])
+    return (checkpoint['t'], checkpoint['season_count'], checkpoint['episode_reward'],
+            checkpoint['episode_count'], checkpoint['mean_rewards'])
+
+# 處理中斷信號
+class SignalHandler:
+    def __init__(self, policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, checkpoint_path):
+        self.policy = policy
+        self.buffer = buffer
+        self.running_stat = running_stat
+        self.t = t
+        self.season_count = season_count
+        self.episode_reward = episode_reward
+        self.episode_count = episode_count
+        self.mean_rewards = mean_rewards
+        self.checkpoint_path = checkpoint_path
+        self.interrupted = False
+
+    def handle(self, signum, frame):
+        print("\nReceived interrupt signal. Saving checkpoint...")
+        self.interrupted = True
+        save_checkpoint(self.policy, self.buffer, self.running_stat, self.t, self.season_count,
+                        self.episode_reward, self.episode_count, self.mean_rewards, self.checkpoint_path)
+        exit(0)
 
 def main():
     # 初始化環境
@@ -78,8 +163,21 @@ def main():
     episode_count = 0
     season_count = 0
     mean_rewards = []
+    start_t = 0
 
-    for t in range(TOTAL_TIMESTEPS):
+    # 載入檢查點（如果存在）
+    checkpoint_data = load_checkpoint(policy, buffer, running_stat, CHECKPOINT_PATH)
+    if checkpoint_data[0] is not None:
+        start_t, season_count, episode_reward, episode_count, mean_rewards = checkpoint_data
+        print(f"Resumed training from checkpoint at t={start_t}, season={season_count}")
+
+    # 設置中斷信號處理
+    signal_handler = SignalHandler(policy, buffer, running_stat, 0, season_count, episode_reward,
+                                  episode_count, mean_rewards, CHECKPOINT_PATH)
+    signal.signal(signal.SIGINT, signal_handler.handle)
+
+    for t in range(start_t, TOTAL_TIMESTEPS):
+        signal_handler.t = t  # 更新信號處理器的時間步
         # 正則化狀態
         running_stat.update(state)
         state_normalized = running_stat.normalize(state)
@@ -153,7 +251,12 @@ def main():
                 print(f"Season {season_count}: Mean Reward = {mean_reward:.2f}, KL = {approx_kl.item():.4f}, Std = {std.mean().item():.4f}")
                 episode_count = 0
 
-    # 保存模型
+        if (t + 1) % (NUM_STEPS * 100) == 0:
+            # 保存檢查點
+            save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
+                            episode_count, mean_rewards, CHECKPOINT_PATH)
+
+    # 保存最終模型
     torch.save(policy.model.actor.state_dict(), "ppo_actor.pth")
     torch.save(policy.model.critic.state_dict(), "ppo_critic.pth")
 

@@ -19,7 +19,6 @@ class ActorCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(64, 1)
         )
-        # Initialize bounds on the specified device
         self.lower_bound = torch.tensor(lower_bound, dtype=torch.float32, device=device)
         self.upper_bound = torch.tensor(upper_bound, dtype=torch.float32, device=device)
 
@@ -76,7 +75,7 @@ class PPOPolicy(nn.Module):
         surr1 = ratio * advantage_batch
         surr2 = torch.clamp(ratio, 1 - self.clip_range, 1 + self.clip_range) * advantage_batch
         pi_loss = -torch.min(surr1, surr2).mean()
-        value_loss = self.value_coeff * nn.MSELoss()(value.squeeze(), return_batch)
+        value_loss = self.value_coeff * nn.MSELoss()(value, return_batch)  # Removed squeeze()
         entropy_loss = -self.entropy_coeff * entropy
         total_loss = pi_loss + value_loss + entropy_loss
 

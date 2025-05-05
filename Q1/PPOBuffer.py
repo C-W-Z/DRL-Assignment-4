@@ -23,9 +23,7 @@ class PPOBuffer:
         self.action_dim = action_dim
         self.buffer_capacity = buffer_capacity
         self.rng = np.random.default_rng(seed=seed)
-        self.clear()
 
-    def clear(self):
         self.obs = np.zeros((self.buffer_capacity, self.obs_dim), dtype=np.float32)
         self.action = np.zeros((self.buffer_capacity, self.action_dim), dtype=np.float32)
         self.reward = np.zeros((self.buffer_capacity, 1), dtype=np.float32)
@@ -33,10 +31,22 @@ class PPOBuffer:
         self.returns = np.zeros((self.buffer_capacity, 1), dtype=np.float32)
         self.advantage = np.zeros((self.buffer_capacity, 1), dtype=np.float32)
         self.values = np.zeros((self.buffer_capacity, 1), dtype=np.float32)
+
+        self.clear()
+
+    def clear(self):
+        self.obs.fill(0)
+        self.action.fill(0)
+        self.reward.fill(0)
+        self.log_prob.fill(0)
+        self.returns.fill(0)
+        self.advantage.fill(0)
+        self.values.fill(0)
         self.start_index = 0
         self.pointer = 0
 
     def record(self, obs, action, reward, values, log_prob):
+        assert self.pointer < self.buffer_capacity, f"Buffer overflow: pointer={self.pointer}, capacity={self.buffer_capacity}"
         self.obs[self.pointer] = obs
         self.action[self.pointer] = action
         self.reward[self.pointer] = reward
@@ -51,6 +61,26 @@ class PPOBuffer:
             self.reward[path_slice], values_t, is_last_terminal, gamma, gae_lam, last_v
         )
         self.start_index = self.pointer
+
+    def get_data(self):
+        whole_slice = slice(0, self.pointer)
+        return {
+            'obs': self.obs[whole_slice],
+            'action': self.action[whole_slice],
+            'reward': self.reward[whole_slice],
+            'values': self.values[whole_slice],
+            'log_prob': self.log_prob[whole_slice],
+            'return': self.returns[whole_slice],
+            'advantage': self.advantage[whole_slice],
+        }
+
+    def load_data(self, data, pointer, start_index):
+        self.clear()
+        self.pointer = min(pointer, self.buffer_capacity)
+        self.start_index = min(start_index, self.pointer)
+        for key in ['obs', 'action', 'reward', 'values', 'log_prob', 'return', 'advantage']:
+            if key in data and len(data[key]) > 0:
+                self.__dict__[key][:self.pointer] = data[key][:self.pointer]
 
     def get_mini_batch(self, batch_size):
         assert batch_size <= self.pointer, "Batch size must be smaller than number of data."
