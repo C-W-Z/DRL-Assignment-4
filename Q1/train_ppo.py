@@ -262,7 +262,7 @@ def load_random_state(state):
     if state['cuda'] is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state(state['cuda'])
 
-def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, log_dir, checkpoint_path):
+def save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward, mean_rewards, log_dir, checkpoint_path):
     checkpoint = {
         'actor_state_dict': policy.actor.state_dict(),
         'critic_state_dict': policy.critic.state_dict(),
@@ -272,10 +272,8 @@ def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_rewar
         'buffer_pointer': buffer.pointer,
         'buffer_start_index': buffer.start_index,
         'buffer_rng': buffer.rng.__getstate__(),
-        't': t,
-        'season_count': season_count,
-        'episode_reward': episode_reward,
         'episode_count': episode_count,
+        'episode_reward': episode_reward,
         'mean_rewards': mean_rewards,
         'random_state': save_random_state(),
         'running_stat': {
@@ -290,10 +288,9 @@ def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_rewar
 
 def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
     if not os.path.exists(checkpoint_path):
-        return None, None, None, None, None, None
+        return None, None, None, None, None
     checkpoint = torch.load(checkpoint_path, weights_only=False)
 
-    # If policy, buffer, or running_stat are provided, load their states
     if policy is not None:
         policy.actor.load_state_dict(checkpoint['actor_state_dict'])
         policy.critic.load_state_dict(checkpoint['critic_state_dict'])
@@ -308,22 +305,22 @@ def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
         running_stat.std = checkpoint['running_stat']['std']
         running_stat.count = checkpoint['running_stat']['count']
 
-    # Always load random state if present
     if 'random_state' in checkpoint:
         load_random_state(checkpoint['random_state'])
 
     log_dir = checkpoint.get('log_dir', 'Log')
-    return (checkpoint['t'], checkpoint['season_count'], checkpoint['episode_reward'],
-            checkpoint['episode_count'], checkpoint['mean_rewards'], log_dir)
+    return (checkpoint['episode_count'], checkpoint['episode_reward'],
+            checkpoint['mean_rewards'], log_dir)
 
 ###########################################
 # Training Function
 ###########################################
 
 def train_ppo(env_name="Pendulum-v1",
-              num_steps=2048,
+              num_episodes_per_update=10,
+              max_buffer_steps=10000,
               batch_size=64,
-              total_seasons=500,
+              total_episodes=5000,
               gamma=0.99,
               gae_lam=0.95,
               num_epochs=10,
@@ -333,7 +330,7 @@ def train_ppo(env_name="Pendulum-v1",
               entropy_coeff=0.01,
               max_grad_norm=0.5,
               initial_std=1.0,
-              save_interval=10,
+              save_interval=100,
               checkpoint_path="checkpoint.pt"):
 
     # Initialize environment
@@ -345,7 +342,7 @@ def train_ppo(env_name="Pendulum-v1",
 
     # Initialize TensorBoard
     checkpoint_data = load_checkpoint(None, None, None, checkpoint_path)
-    log_dir = checkpoint_data[5]
+    log_dir = checkpoint_data[4]
     if log_dir is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = os.path.join("Log", f"run_{timestamp}")
@@ -355,7 +352,7 @@ def train_ppo(env_name="Pendulum-v1",
     print(f"Logging to TensorBoard at {log_dir}")
 
     # Initialize buffer and policy
-    buffer = PPOBuffer(state_dim, action_dim, num_steps)
+    buffer = PPOBuffer(state_dim, action_dim, max_buffer_steps)
     policy = PPOPolicy(
         state_dim=state_dim,
         action_dim=action_dim,
@@ -377,17 +374,17 @@ def train_ppo(env_name="Pendulum-v1",
     episode_rewards = []
     episode_reward = 0
     episode_count = 0
-    season_count = 0
+    episodes_collected = 0
     mean_rewards = []
-    start_t = 0
+    start_episode = 0
 
     # Load checkpoint (if exists)
     if checkpoint_data[0] is not None:
-        start_t, season_count, episode_reward, episode_count, mean_rewards, _ = load_checkpoint(
+        start_episode, episode_reward, mean_rewards, _ = load_checkpoint(
             policy, buffer, running_stat, checkpoint_path)
-        print(f"Resumed training from checkpoint at t={start_t}, season={season_count}")
+        print(f"Resumed training from checkpoint at episode={start_episode}")
 
-    for t in range(start_t, total_seasons * num_steps):
+    while episode_count < total_episodes:
         # Normalize state
         running_stat.update(state)
         state_normalized = running_stat.normalize(state)
@@ -405,15 +402,12 @@ def train_ppo(env_name="Pendulum-v1",
 
         state = next_state
 
-        # Process trajectory
-        if done or (t + 1) % num_steps == 0:
-            if done:
-                episode_count += 1
-                episode_rewards.append(episode_reward)
-                episode_reward = 0
-                state, _ = env.reset()
+        if done:
+            episode_count += 1
+            episodes_collected += 1
+            episode_rewards.append(episode_reward)
 
-            # Calculate GAE and returns
+            # Process trajectory for the episode
             next_state_normalized = running_stat.normalize(state)
             last_value = policy.get_values(torch.FloatTensor(next_state_normalized).unsqueeze(0).to(policy.device))
             buffer.process_trajectory(
@@ -423,60 +417,62 @@ def train_ppo(env_name="Pendulum-v1",
                 last_v=last_value
             )
 
-        # Update policy
-        if (t + 1) % num_steps == 0:
-            season_count += 1
-            for _ in range(num_epochs):
-                batch_data = buffer.get_mini_batch(batch_size)
-                for data in batch_data:
-                    obs_batch = torch.tensor(data['obs'], dtype=torch.float32)
-                    action_batch = torch.tensor(data['action'], dtype=torch.float32)
-                    log_prob_batch = torch.tensor(data['log_prob'], dtype=torch.float32)
-                    advantage_batch = torch.tensor(data['advantage'], dtype=torch.float32)
-                    return_batch = torch.tensor(data['return'], dtype=torch.float32)
+            # Reset environment
+            state, _ = env.reset()
+            episode_reward = 0
 
-                    # Normalize advantages
-                    advantage_batch = (advantage_batch - advantage_batch.mean()) / (advantage_batch.std() + 1e-8)
+            # Update policy after collecting enough episodes
+            if episodes_collected >= num_episodes_per_update:
+                for _ in range(num_epochs):
+                    batch_data = buffer.get_mini_batch(batch_size)
+                    for data in batch_data:
+                        obs_batch = torch.tensor(data['obs'], dtype=torch.float32)
+                        action_batch = torch.tensor(data['action'], dtype=torch.float32)
+                        log_prob_batch = torch.tensor(data['log_prob'], dtype=torch.float32)
+                        advantage_batch = torch.tensor(data['advantage'], dtype=torch.float32)
+                        return_batch = torch.tensor(data['return'], dtype=torch.float32)
 
-                    # Update
-                    pi_loss, v_loss, total_loss, approx_kl, std = policy.update(
-                        obs_batch, action_batch, log_prob_batch, advantage_batch, return_batch
-                    )
+                        # Normalize advantages
+                        advantage_batch = (advantage_batch - advantage_batch.mean()) / (advantage_batch.std() + 1e-8)
 
-                    # Log metrics
-                    writer.add_scalar("train/pi_loss", pi_loss.item(), t)
-                    writer.add_scalar("train/v_loss", v_loss.item(), t)
-                    writer.add_scalar("train/total_loss", total_loss.item(), t)
-                    writer.add_scalar("train/approx_kl", approx_kl.item(), t)
-                    writer.add_scalar("train/std", std.mean().item(), t)
+                        # Update
+                        pi_loss, v_loss, total_loss, approx_kl, std = policy.update(
+                            obs_batch, action_batch, log_prob_batch, advantage_batch, return_batch
+                        )
 
-            # Clear buffer
-            buffer.clear()
+                        # Log metrics
+                        writer.add_scalar("train/pi_loss", pi_loss.item(), episode_count)
+                        writer.add_scalar("train/v_loss", v_loss.item(), episode_count)
+                        writer.add_scalar("train/total_loss", total_loss.item(), episode_count)
+                        writer.add_scalar("train/approx_kl", approx_kl.item(), episode_count)
+                        writer.add_scalar("train/std", std.mean().item(), episode_count)
 
-            # Log returns
-            if episode_count > 0:
-                mean_reward = np.mean(episode_rewards[-episode_count:])
+                # Log returns
+                mean_reward = np.mean(episode_rewards[-episodes_collected:])
                 mean_rewards.append(mean_reward)
-                writer.add_scalar("misc/ep_reward_mean", mean_reward, t)
-                print(f"Season {season_count} | Mean Reward {mean_reward:.2f} | KL {approx_kl.item():.4f} | STD {std.mean().item():.4f}")
-                episode_count = 0
+                writer.add_scalar("misc/ep_reward_mean", mean_reward, episode_count)
+                print(f"Episode {episode_count} | Mean Reward {mean_reward:.2f} | KL {approx_kl.item():.4f} | STD {std.mean().item():.4f}")
 
-        if (t + 1) % (save_interval * num_steps) == 0:
+                # Clear buffer and reset episode collection
+                buffer.clear()
+                episodes_collected = 0
+
             # Save checkpoint
-            save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
-                            episode_count, mean_rewards, log_dir, checkpoint_path)
+            if episode_count % save_interval == 0:
+                save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward,
+                                mean_rewards, log_dir, checkpoint_path)
 
     # Plot reward curve
     plt.figure(figsize=(8, 6))
     plt.plot(range(len(mean_rewards)), mean_rewards)
-    plt.xlabel("Season")
+    plt.xlabel("Update")
     plt.ylabel("Mean Episode Reward")
     plt.grid(True)
-    plt.savefig("season_reward.png")
+    plt.savefig("episode_reward.png")
 
     # Save final model
-    save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
-                    episode_count, mean_rewards, log_dir, checkpoint_path)
+    save_checkpoint(policy, buffer, running_stat, episode_count, episode_reward,
+                    mean_rewards, log_dir, checkpoint_path)
 
     writer.close()
     env.close()
@@ -486,6 +482,6 @@ def train_ppo(env_name="Pendulum-v1",
 ###########################################
 
 if __name__ == "__main__":
-    train_ppo(total_seasons=400, learning_rate=2.5e-4) # 運氣好200即可
-    train_ppo(total_seasons=500, learning_rate=1e-4)   # 運氣好250
-    train_ppo(total_seasons=600, learning_rate=2e-5)   # 運氣好300
+    train_ppo(total_episodes=4000, learning_rate=2.5e-4)  # Adjusted for episode-based training
+    train_ppo(total_episodes=5000, learning_rate=1e-4)
+    train_ppo(total_episodes=6000, learning_rate=2e-5)
