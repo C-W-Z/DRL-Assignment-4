@@ -35,13 +35,6 @@ class PPOBuffer:
         self.clear()
 
     def clear(self):
-        self.obs.fill(0)
-        self.action.fill(0)
-        self.reward.fill(0)
-        self.log_prob.fill(0)
-        self.returns.fill(0)
-        self.advantage.fill(0)
-        self.values.fill(0)
         self.start_index = 0
         self.pointer = 0
 
