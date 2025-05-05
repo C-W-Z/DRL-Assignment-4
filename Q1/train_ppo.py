@@ -257,8 +257,8 @@ def load_random_state(state):
 
 def save_checkpoint(policy, buffer, running_stat, t, season_count, episode_reward, episode_count, mean_rewards, log_dir, checkpoint_path):
     checkpoint = {
-        'actor_state_dict': policy.model.actor.state_dict(),
-        'critic_state_dict': policy.model.critic.state_dict(),
+        'actor_state_dict': policy.actor.state_dict(),
+        'critic_state_dict': policy.critic.state_dict(),
         'log_std': policy.log_std,
         'optimizer_state_dict': policy.optimizer.state_dict(),
         'buffer': buffer.get_data(),
@@ -288,8 +288,8 @@ def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
 
     # If policy, buffer, or running_stat are provided, load their states
     if policy is not None:
-        policy.model.actor.load_state_dict(checkpoint['actor_state_dict'])
-        policy.model.critic.load_state_dict(checkpoint['critic_state_dict'])
+        policy.actor.load_state_dict(checkpoint['actor_state_dict'])
+        policy.critic.load_state_dict(checkpoint['critic_state_dict'])
         policy.log_std = checkpoint['log_std']
         policy.optimizer = optim.Adam(policy.parameters(), lr=2.5e-4)
         policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -316,7 +316,7 @@ def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
 def train_ppo(env_name="Pendulum-v1",
               num_steps=2048,
               batch_size=64,
-              total_timesteps=2048000,
+              total_seasons=500,
               gamma=0.99,
               gae_lam=0.95,
               num_epochs=10,
@@ -326,7 +326,7 @@ def train_ppo(env_name="Pendulum-v1",
               entropy_coeff=0.01,
               max_grad_norm=0.5,
               initial_std=1.0,
-              save_interval=20480,
+              save_interval=10,
               checkpoint_path="checkpoint.pt"):
 
     # Initialize environment
@@ -380,7 +380,7 @@ def train_ppo(env_name="Pendulum-v1",
             policy, buffer, running_stat, checkpoint_path)
         print(f"Resumed training from checkpoint at t={start_t}, season={season_count}")
 
-    for t in range(start_t, total_timesteps):
+    for t in range(start_t, total_seasons * num_steps):
         # Normalize state
         running_stat.update(state)
         state_normalized = running_stat.normalize(state)
@@ -454,14 +454,14 @@ def train_ppo(env_name="Pendulum-v1",
                 print(f"Season {season_count}: Mean Reward = {mean_reward:.2f}, KL = {approx_kl.item():.4f}, Std = {std.mean().item():.4f}")
                 episode_count = 0
 
-        if (t + 1) % save_interval == 0:
+        if (t + 1) % (save_interval * num_steps) == 0:
             # Save checkpoint
             save_checkpoint(policy, buffer, running_stat, t + 1, season_count, episode_reward,
                           episode_count, mean_rewards, log_dir, checkpoint_path)
 
     # Save final model
-    torch.save(policy.model.actor.state_dict(), "ppo_actor.pth")
-    torch.save(policy.model.critic.state_dict(), "ppo_critic.pth")
+    torch.save(policy.actor.state_dict(), "ppo_actor.pth")
+    torch.save(policy.critic.state_dict(), "ppo_critic.pth")
 
     # Plot reward curve
     plt.figure(figsize=(8, 6))
@@ -486,4 +486,7 @@ def train_ppo(env_name="Pendulum-v1",
 ###########################################
 
 if __name__ == "__main__":
-    train_ppo()
+    train_ppo(total_seasons=200, learning_rate=3e-4)
+    train_ppo(total_seasons=400, learning_rate=2e-4)
+    train_ppo(total_seasons=500, learning_rate=1e-4)
+    train_ppo(total_seasons=600, learning_rate=2e-5)
