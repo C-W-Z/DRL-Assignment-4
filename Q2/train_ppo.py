@@ -234,12 +234,12 @@ class PPOBuffer:
 ###########################################
 
 class RunningStat:
-    def __init__(self, shape, mean=None, std=None, count=0):
+    def __init__(self, shape, mean=None, std=None, count=0, M2=None):
         self.shape = shape
         self.mean = np.zeros(shape, dtype=np.float32) if mean is None else mean
         self.std = np.ones(shape, dtype=np.float32) if std is None else std
         self.count = count
-        self.M2 = np.zeros(shape, dtype=np.float32)  # Sum of squared differences
+        self.M2 = np.zeros(shape, dtype=np.float32) if M2 is None else M2  # Sum of squared differences
 
     def update(self, x):
         x = np.nan_to_num(x, nan=0.0, posinf=1e5, neginf=-1e5)  # Handle invalid inputs
@@ -492,7 +492,8 @@ def train_ppo(env_name="cartpole-balance",
 ###########################################
 
 if __name__ == "__main__":
-    checkpoint_path = "cartpole_balance_checkpoint.pt"
-    train_ppo(total_episodes=10000, learning_rate=2.5e-4, checkpoint_path=checkpoint_path)
-    train_ppo(total_episodes=12000, learning_rate=1e-4, checkpoint_path=checkpoint_path)
-    train_ppo(total_episodes=15000, learning_rate=2e-5, checkpoint_path=checkpoint_path)
+    checkpoint_path = "checkpoint.pt"
+    train_ppo(total_episodes=500, learning_rate=1e-3, checkpoint_path=checkpoint_path)
+    train_ppo(total_episodes=800, learning_rate=8e-4, checkpoint_path=checkpoint_path)
+    train_ppo(total_episodes=900, learning_rate=6e-4, checkpoint_path=checkpoint_path)
+    train_ppo(total_episodes=1000, learning_rate=4e-4, checkpoint_path=checkpoint_path)
