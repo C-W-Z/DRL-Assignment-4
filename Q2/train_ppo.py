@@ -298,7 +298,7 @@ def save_checkpoint(policy, buffer, running_stat, episode_count, mean_rewards, l
     torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
-def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
+def load_checkpoint(policy, buffer, running_stat, checkpoint_path, lr=2.5e-4):
     if not os.path.exists(checkpoint_path):
         return None, None, None
     checkpoint = torch.load(checkpoint_path, weights_only=False)
@@ -307,7 +307,7 @@ def load_checkpoint(policy, buffer, running_stat, checkpoint_path):
         policy.actor.load_state_dict(checkpoint['actor_state_dict'])
         policy.critic.load_state_dict(checkpoint['critic_state_dict'])
         policy.log_std = checkpoint['log_std']
-        policy.optimizer = optim.Adam(policy.parameters(), lr=2.5e-4)
+        policy.optimizer = optim.Adam(policy.parameters(), lr=lr)
         policy.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     if buffer is not None:
         buffer.load_data(checkpoint['buffer'], checkpoint['buffer_pointer'], checkpoint['buffer_start_index'])
@@ -413,7 +413,7 @@ def train_ppo(env_name="cartpole-balance",
 
     # Load checkpoint (if exists)
     if episode_count is not None:
-        episode_count, mean_rewards, _ = load_checkpoint(policy, buffer, running_stat, checkpoint_path)
+        episode_count, mean_rewards, _ = load_checkpoint(policy, buffer, running_stat, checkpoint_path, lr=learning_rate)
         print(f"Resumed training from checkpoint at episode={episode_count}")
     else:
         episode_count = 0
@@ -494,6 +494,5 @@ def train_ppo(env_name="cartpole-balance",
 if __name__ == "__main__":
     checkpoint_path = "checkpoint.pt"
     train_ppo(total_episodes=500, learning_rate=1e-3, checkpoint_path=checkpoint_path)
-    train_ppo(total_episodes=800, learning_rate=8e-4, checkpoint_path=checkpoint_path)
-    train_ppo(total_episodes=900, learning_rate=6e-4, checkpoint_path=checkpoint_path)
-    train_ppo(total_episodes=1000, learning_rate=4e-4, checkpoint_path=checkpoint_path)
+    train_ppo(total_episodes=600, learning_rate=8e-4, checkpoint_path=checkpoint_path)
+    train_ppo(total_episodes=1000, learning_rate=2.5e-4, checkpoint_path=checkpoint_path)
