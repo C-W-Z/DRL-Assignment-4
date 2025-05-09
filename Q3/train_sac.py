@@ -14,6 +14,7 @@ from torch.distributions import Normal
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dmc import make_dmc_env
+from itertools import chain
 
 ###########################################
 # Neural Network Models
@@ -167,11 +168,10 @@ def load_random_state(state):
     if state['cuda'] is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state(state['cuda'])
 
-def save_checkpoint(policy, q1, q2, running_stat, step, mean_rewards, log_dir, checkpoint_path):
+def save_checkpoint(policy, q_networks, running_stat, step, mean_rewards, log_dir, checkpoint_path):
     checkpoint = {
         'policy_state_dict': policy.state_dict(),
-        'q1_state_dict': q1.state_dict(),
-        'q2_state_dict': q2.state_dict(),
+        'q_state_dicts': [q.state_dict() for q in q_networks],
         'policy_optimizer_state_dict': policy_optimizer.state_dict(),
         'q_optimizer_state_dict': q_optimizer.state_dict(),
         'log_alpha': log_alpha,
@@ -190,7 +190,7 @@ def save_checkpoint(policy, q1, q2, running_stat, step, mean_rewards, log_dir, c
     torch.save(checkpoint, checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
-def load_checkpoint(policy, q1, q2, running_stat, checkpoint_path):
+def load_checkpoint(policy, q_networks, running_stat, checkpoint_path):
     if not os.path.exists(checkpoint_path):
         return None, None, None
     checkpoint = torch.load(checkpoint_path, weights_only=False)
@@ -198,9 +198,9 @@ def load_checkpoint(policy, q1, q2, running_stat, checkpoint_path):
     if policy is not None:
         policy.load_state_dict(checkpoint['policy_state_dict'])
         policy_optimizer.load_state_dict(checkpoint['policy_optimizer_state_dict'])
-    if q1 is not None and q2 is not None:
-        q1.load_state_dict(checkpoint['q1_state_dict'])
-        q2.load_state_dict(checkpoint['q2_state_dict'])
+    if q_networks is not None:
+        for i, q in enumerate(q_networks):
+            q.load_state_dict(checkpoint['q_state_dicts'][i])
         q_optimizer.load_state_dict(checkpoint['q_optimizer_state_dict'])
     if running_stat is not None:
         running_stat.mean = checkpoint['running_stat']['mean']
@@ -226,16 +226,16 @@ def train_sac(env_name="humanoid-walk",
               total_timesteps=3000000,
               batch_size=256,
               replay_buffer_capacity=1000000,
-              learning_rate=3e-4,
+              learning_rate=1e-4,
               gamma=0.99,
               tau=0.005,
-              target_entropy_scale=0.2,
-              reward_scale=1.0,
-              start_steps=10000,
+              target_entropy_scale=1.0,
+              start_steps=20000,
               update_frequency=1,
-              updates_per_step=1,
+              updates_per_step=2,
               save_interval=5000,
-              checkpoint_path="humanoid_walk_sac_checkpoint.pt"):
+              checkpoint_path="humanoid_walk_sac_checkpoint.pt",
+              num_critics=2):
 
     global device, policy_optimizer, q_optimizer, alpha_optimizer, log_alpha
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -247,15 +247,16 @@ def train_sac(env_name="humanoid-walk",
     upper_bound = env.action_space.high
 
     policy = PolicyNetwork(state_dim, action_dim, lower_bound, upper_bound).to(device)
-    q1 = QNetwork(state_dim, action_dim).to(device)
-    q2 = QNetwork(state_dim, action_dim).to(device)
-    target_q1 = QNetwork(state_dim, action_dim).to(device)
-    target_q2 = QNetwork(state_dim, action_dim).to(device)
-    target_q1.load_state_dict(q1.state_dict())
-    target_q2.load_state_dict(q2.state_dict())
+    q_networks = [QNetwork(state_dim, action_dim).to(device) for _ in range(num_critics)]
+    target_q_networks = [QNetwork(state_dim, action_dim).to(device) for _ in range(num_critics)]
+    for target_q, q in zip(target_q_networks, q_networks):
+        target_q.load_state_dict(q.state_dict())
 
     policy_optimizer = optim.Adam(policy.parameters(), lr=learning_rate)
-    q_optimizer = optim.Adam(list(q1.parameters()) + list(q2.parameters()), lr=learning_rate)
+    q_optimizer = optim.Adam(
+        [param for q in q_networks for param in q.parameters()],
+        lr=learning_rate
+    )
     log_alpha = torch.tensor(np.log(0.2), requires_grad=True, device=device)
     alpha_optimizer = optim.Adam([log_alpha], lr=learning_rate)
     target_entropy = -target_entropy_scale * action_dim
@@ -263,7 +264,7 @@ def train_sac(env_name="humanoid-walk",
     replay_buffer = ReplayBuffer(replay_buffer_capacity, state_dim, action_dim)
     running_stat = RunningStat((state_dim,))
 
-    episode_count, _, log_dir = load_checkpoint(None, None, None, None, checkpoint_path)
+    episode_count, _, log_dir = load_checkpoint(None, None, None, checkpoint_path)
     if log_dir is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = os.path.join("Log", f"run_{timestamp}")
@@ -272,7 +273,7 @@ def train_sac(env_name="humanoid-walk",
     writer = SummaryWriter(log_dir)
     print(f"Logging to TensorBoard at {log_dir}")
 
-    step, mean_rewards, _ = load_checkpoint(policy, q1, q2, running_stat, checkpoint_path) if episode_count is not None else (0, [], None)
+    step, mean_rewards, _ = load_checkpoint(policy, q_networks, running_stat, checkpoint_path) if episode_count is not None else (0, [], None)
     if step is not None:
         print(f"Resumed training from checkpoint at step={step}")
 
@@ -285,23 +286,27 @@ def train_sac(env_name="humanoid-walk",
     while step < total_timesteps:
         running_stat.update(state)
         state_normalized = running_stat.normalize(state)
+        print(f"State mean: {np.mean(state)}, Std: {np.std(state)}")
 
         if step < start_steps:
             action = env.action_space.sample()
         else:
             action = policy.get_action(state_normalized, deterministic=False)
+            action += np.random.normal(0, 0.1, size=action.shape)
+            action = np.clip(action, lower_bound, upper_bound)
 
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
+        print(f"Raw reward: {reward}")
         episode_reward += reward
         episode_steps += 1
         step += 1
 
-        replay_buffer.push(state_normalized, action, reward * reward_scale, running_stat.normalize(next_state), done)
+        replay_buffer.push(state_normalized, action, reward, running_stat.normalize(next_state), done)
 
         state = next_state
 
-        if len(replay_buffer) > batch_size and step >= start_steps:
+        if len(replay_buffer) > batch_size and step >= start_steps and step % update_frequency == 0:
             for _ in range(updates_per_step):
                 batch = replay_buffer.sample(batch_size)
                 states = batch['states']
@@ -312,24 +317,27 @@ def train_sac(env_name="humanoid-walk",
 
                 with torch.no_grad():
                     next_actions, next_log_probs = policy.sample(next_states)
-                    next_q1 = target_q1(next_states, next_actions)
-                    next_q2 = target_q2(next_states, next_actions)
-                    next_q = torch.min(next_q1, next_q2) - log_alpha.exp() * next_log_probs
+                    next_qs = [target_q(next_states, next_actions) for target_q in target_q_networks]
+                    next_q = torch.min(torch.stack(next_qs, dim=0), dim=0)[0]
+                    next_q = next_q - torch.clamp(log_alpha.exp(), max=10.0) * next_log_probs
                     target_q = rewards + (1 - dones) * gamma * next_q
 
-                q1_loss = F.mse_loss(q1(states, actions), target_q)
-                q2_loss = F.mse_loss(q2(states, actions), target_q)
-                q_loss = (q1_loss + q2_loss) / 2
+                q_losses = []
+                for q in q_networks:
+                    q_pred = q(states, actions)
+                    q_loss = F.mse_loss(q_pred, target_q)
+                    q_losses.append(q_loss)
+                q_loss = sum(q_losses) / len(q_losses)
 
                 q_optimizer.zero_grad()
                 q_loss.backward()
+                torch.nn.utils.clip_grad_norm_(list(chain.from_iterable(q.parameters() for q in q_networks)), max_norm=10.0)
                 q_optimizer.step()
 
                 actions_pi, log_probs_pi = policy.sample(states)
-                q1_pi = q1(states, actions_pi)
-                q2_pi = q2(states, actions_pi)
-                q_pi = torch.min(q1_pi, q2_pi)
-                policy_loss = (log_alpha.exp() * log_probs_pi - q_pi).mean()
+                qs_pi = [q(states, actions_pi) for q in q_networks]
+                q_pi = torch.min(torch.stack(qs_pi, dim=0), dim=0)[0]
+                policy_loss = (torch.clamp(log_alpha.exp(), max=10.0) * log_probs_pi - q_pi).mean()
 
                 policy_optimizer.zero_grad()
                 policy_loss.backward()
@@ -341,10 +349,9 @@ def train_sac(env_name="humanoid-walk",
                 alpha_loss.backward()
                 alpha_optimizer.step()
 
-                for target_param, param in zip(target_q1.parameters(), q1.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-                for target_param, param in zip(target_q2.parameters(), q2.parameters()):
-                    target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+                for target_q, q in zip(target_q_networks, q_networks):
+                    for target_param, param in zip(target_q.parameters(), q.parameters()):
+                        target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
 
                 writer.add_scalar("train/q_loss", q_loss.item(), step)
                 writer.add_scalar("train/policy_loss", policy_loss.item(), step)
@@ -362,9 +369,9 @@ def train_sac(env_name="humanoid-walk",
             episode_steps = 0
 
         if step % save_interval == 0 and step > 0:
-            save_checkpoint(policy, q1, q2, running_stat, step, list(recent_rewards), log_dir, checkpoint_path)
+            save_checkpoint(policy, q_networks, running_stat, step, list(recent_rewards), log_dir, checkpoint_path)
 
-        if len(recent_rewards) == 100 and np.mean(recent_rewards) > 500:
+        if len(recent_rewards) == 100 and np.mean(recent_rewards) > 1000:
             print(f"Achieved mean reward {np.mean(recent_rewards):.2f}. Stopping training.")
             break
 
@@ -375,11 +382,12 @@ def train_sac(env_name="humanoid-walk",
     plt.grid(True)
     plt.savefig("episode_reward.png")
 
-    save_checkpoint(policy, q1, q2, running_stat, step, list(recent_rewards), log_dir, checkpoint_path)
+    save_checkpoint(policy, q_networks, running_stat, step, list(recent_rewards), log_dir, checkpoint_path)
 
     writer.close()
     env.close()
 
 if __name__ == "__main__":
     checkpoint_path = "humanoid_walk_sac_checkpoint.pt"
-    train_sac(total_timesteps=3000000, learning_rate=3e-4, checkpoint_path=checkpoint_path)
+    train_sac(total_timesteps=3000000, learning_rate=1e-4, target_entropy_scale=1.0,
+              start_steps=20000, updates_per_step=2, checkpoint_path=checkpoint_path, num_critics=2)
