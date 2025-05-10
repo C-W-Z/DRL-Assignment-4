@@ -3,6 +3,7 @@ import numpy as np
 from sac_imp import SAC
 from collections import deque
 import json
+import os
 
 class SACTrainer:
     """Handles the training process for SAC algorithm"""
@@ -16,7 +17,8 @@ class SACTrainer:
         updates_per_step=1,
         start_steps=1000,  # 減少初始隨機步數
         eval_episodes=10,  # 減少評估回合數
-        debug_config=None
+        debug_config=None,
+        save_dir='./checkpoints',
     ):
         # Default debugging configuration with more focused outputs
         self.debug_config = {
@@ -44,6 +46,10 @@ class SACTrainer:
         self.updates_per_step = updates_per_step
         self.start_steps = start_steps
         self.eval_episodes = eval_episodes
+        self.save_dir = save_dir
+
+        # Create save directory if it doesn't exist
+        os.makedirs(save_dir, exist_ok=True)
 
         # Create environments
         self.env = gym.make(env_name)
@@ -60,7 +66,7 @@ class SACTrainer:
             hidden_dim=256,
             gamma=0.99,
             tau=0.005,
-            lr=1e-3,  # 增加學習率以加速收斂
+            lr=1e-3,
             alpha=0.2,
             automatic_entropy_tuning=True
         )
@@ -91,24 +97,23 @@ class SACTrainer:
         print(f"Steps: {total_steps} | Length: {episode_length}")
         print(f"Reward: {episode_reward:.2f} | Rolling Avg: {rolling_reward:.2f}")
         print(f"Mean Losses - Q1: {mean_losses['q1']:.4f}, Q2: {mean_losses['q2']:.4f}, Policy: {mean_losses['policy']:.4f}")
-        print(f"Action Means: {action_means:.4f}")
-        print(f"Action StDevs: {action_stds:.4f}")
+        print(f"Action Mean: {action_means:.4f} | Action Std: {action_stds:.4f}")
         print(f"{'='*50}")
 
         # Clear episode statistics for next episode
         for key in self.episode_stats:
             self.episode_stats[key] = []
 
-    def update_episode_stats(self, losses, actions):
+    def update_episode_stats(self, losses, action):
         """Updates episode statistics during training"""
         if losses:
             self.episode_stats['q1_losses'].append(losses['q1_loss'])
             self.episode_stats['q2_losses'].append(losses['q2_loss'])
             self.episode_stats['policy_losses'].append(losses['policy_loss'])
 
-        if actions is not None:
-            self.episode_stats['action_means'].append(np.mean(actions, axis=0))
-            self.episode_stats['action_stds'].append(np.std(actions, axis=0))
+        if action is not None:
+            self.episode_stats['action_means'].append(np.mean(action))
+            self.episode_stats['action_stds'].append(np.std(action))
 
     def debug_print(self, category, message):
         if self.debug_config.get(f'print_{category}', False):
@@ -147,6 +152,18 @@ class SACTrainer:
 
         return mean_reward, std_reward
 
+    def save_best_model(self):
+        """Save the best model based on evaluation reward"""
+        save_path = os.path.join(self.save_dir, 'best_model.pth')
+        self.agent.save(save_path)
+        print(f"Saved best model to {save_path}")
+
+    def save_checkpoint(self, episode, total_steps):
+        """Save a checkpoint of the current training state"""
+        checkpoint_path = os.path.join(self.save_dir, f'checkpoint_episode_{episode}.pth')
+        self.agent.save_checkpoint(checkpoint_path, episode, total_steps)
+        print(f"Saved checkpoint to {checkpoint_path}")
+
     def train(self, start_episode=0, total_steps=0):
         """
         Main training loop for SAC algorithm.
@@ -156,7 +173,7 @@ class SACTrainer:
             total_steps (int): Total number of steps taken in previous training
         """
         best_eval_reward = getattr(self, 'best_eval_reward', float('-inf'))
-        early_stop_patience = 50  # 減少耐心，Pendulum-v1 收斂較快
+        early_stop_patience = 50
         no_improvement_count = 0
         rolling_reward = deque(maxlen=100)
 
@@ -167,6 +184,7 @@ class SACTrainer:
         print(f"  Max episodes: {self.max_episodes}")
         print(f"  Batch size: {self.batch_size}")
         print(f"  Updates per step: {self.updates_per_step}")
+        print(f"  Save directory: {self.save_dir}")
         print("\n" + "="*50)
         print(f"Total steps so far: {total_steps}")
 
@@ -199,7 +217,7 @@ class SACTrainer:
                 if len(self.agent.replay_buffer) > self.batch_size:
                     for _ in range(self.updates_per_step):
                         update_info = self.agent.update_parameters(self.batch_size)
-                        self.update_episode_stats(update_info, action)  # 更新統計信息
+                        self.update_episode_stats(update_info, action)
                         self.loss_history.append(update_info)
 
                 if episode_steps >= self.max_steps:
@@ -211,7 +229,13 @@ class SACTrainer:
             rolling_reward.append(episode_reward)
 
             # Print episode information
-            self.print_episode_summary(episode, total_steps, episode_reward, episode_steps, np.mean(rolling_reward) if rolling_reward else episode_reward)
+            self.print_episode_summary(
+                episode,
+                total_steps,
+                episode_reward,
+                episode_steps,
+                np.mean(rolling_reward) if rolling_reward else episode_reward
+            )
 
             # Evaluate policy
             if episode % self.eval_interval == 0 and episode > 2:
@@ -221,15 +245,13 @@ class SACTrainer:
                 # Save if best performance
                 if eval_reward > best_eval_reward:
                     best_eval_reward = eval_reward
-                    if hasattr(self, 'save_best_model'):
-                        self.save_best_model()
+                    self.save_best_model()
                     no_improvement_count = 0
                 else:
                     no_improvement_count += 1
 
-                # Save checkpoint if available
-                if hasattr(self, 'save_checkpoint'):
-                    self.save_checkpoint(episode, total_steps)
+                # Save checkpoint
+                self.save_checkpoint(episode, total_steps)
 
             # Early stopping check
             if no_improvement_count >= early_stop_patience:
@@ -241,6 +263,9 @@ class SACTrainer:
         print(f"Best evaluation reward: {best_eval_reward:.2f}")
         print(f"Final average reward: {np.mean(rolling_reward):.2f}")
 
+        # Save training history
+        self.save_training_history()
+
     def save_training_history(self):
         """Saves training metrics to a JSON file"""
         history = {
@@ -250,5 +275,13 @@ class SACTrainer:
             'losses': self.loss_history
         }
 
-        with open(f"{self.save_dir}/training_history.json", 'w') as f:
+        save_path = os.path.join(self.save_dir, 'training_history.json')
+        with open(save_path, 'w') as f:
             json.dump(history, f)
+        print(f"Saved training history to {save_path}")
+
+if __name__ == "__main__":
+    # Initialize trainer with default parameters
+    trainer = SACTrainer()
+    # Start training
+    trainer.train()
