@@ -14,7 +14,6 @@ def _init_weights(m: nn.Module) -> None:
         init.xavier_uniform_(m.weight) # Apply Xavier uniform initialization to weights for stable training
         init.constant_(m.bias, 0)      # Set biases to 0 to avoid initial output offsets
 
-
 class Actor(nn.Module):
     """
     Policy Network for SAC that outputs a Gaussian distribution over actions.
@@ -52,10 +51,10 @@ class Actor(nn.Module):
 
         # Compute scaling factors to map tanh output to action bounds
         self.action_scale = (action_bounds[1] - action_bounds[0]) / 2   # e.g., 1.0 for [-1.0, 1.0]
-        self.action_bias = (action_bounds[1] + action_bounds[0]) / 2    # e.g., 0.0 for [-1.0, 1.0]
+        self.action_bias  = (action_bounds[1] + action_bounds[0]) / 2    # e.g., 0.0 for [-1.0, 1.0]
 
-        self.epsilon = epsilon                              # Small constant to prevent division by zero in log probability
-        self.apply(_init_weights)                           # Apply Xavier initialization to all linear layers
+        self.epsilon      = epsilon
+        self.apply(_init_weights)
 
     def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -70,14 +69,9 @@ class Actor(nn.Module):
                 - log_std: Log standard deviation, shape (batch_size, action_dim).
         """
         x       = self.network(state)           # Shape: (batch_size, hidden_dim)
-
-        # Compute mean of the action distribution
         mean    = self.mean(x)                  # Shape: (batch_size, action_dim)
-
-        # Compute log standard deviation, clamped for numerical stability
         log_std = self.log_std(x)               # Shape: (batch_size, action_dim)
-        log_std = torch.clamp(log_std, -20, 2)  # Restrict log_std to [-20, 2]
-
+        log_std = torch.clamp(log_std, -20, 2)  # Clamped for numerical stability
         return mean, log_std
 
     def sample(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -138,7 +132,7 @@ class Critic(nn.Module):
             nn.Linear(hidden_dim, 1)                        # Output layer: produces a single Q-value
         )
 
-        self.apply(_init_weights)                           # Apply Xavier initialization to all linear layers
+        self.apply(_init_weights)
 
     def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """
@@ -151,7 +145,5 @@ class Critic(nn.Module):
         Returns:
             torch.Tensor: Q-values, shape (batch_size, 1).
         """
-        # Concatenate state and action along the last dimension
         x = torch.cat([state, action], dim=-1)  # Shape: (batch_size, state_dim + action_dim)
-        # Pass through the network to get Q-value
-        return self.network(x)  # Shape: (batch_size, 1)
+        return self.network(x)                  # Shape: (batch_size, 1)
