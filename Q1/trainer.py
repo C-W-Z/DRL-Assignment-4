@@ -2,9 +2,11 @@ import gymnasium as gym
 import numpy as np
 from sac_imp import SAC
 from collections import deque
-import json
 import os
+import random
+import torch
 from torch.utils.tensorboard import SummaryWriter
+import time
 
 class SACTrainer:
     """Handles the training process for SAC algorithm with TensorBoard logging"""
@@ -19,13 +21,14 @@ class SACTrainer:
         start_steps=1000,
         eval_episodes=10,
         save_dir='checkpoints',
-        log_dir='runs',
+        log_dir = f'Logs/run_{int(time.time())}',
+        checkpoint_path=None,
         debug_config=None
     ):
         # Default debugging configuration
         self.debug_config = {
-            'log_tensorboard': True,  # Enable TensorBoard logging
-            'print_minimal': True     # Minimal console output
+            'log_tensorboard': True,
+            'print_minimal': True
         }
         if debug_config is not None:
             self.debug_config.update(debug_config)
@@ -49,13 +52,10 @@ class SACTrainer:
         self.eval_episodes = eval_episodes
         self.save_dir = save_dir
         self.log_dir = log_dir
+        self.checkpoint_path = checkpoint_path
 
-        # Create save and log directories
+        # Create save directory
         os.makedirs(save_dir, exist_ok=True)
-        os.makedirs(log_dir, exist_ok=True)
-
-        # Initialize TensorBoard writer
-        self.writer = SummaryWriter(log_dir=log_dir)
 
         # Create environments
         self.env = gym.make(env_name)
@@ -77,11 +77,118 @@ class SACTrainer:
             automatic_entropy_tuning=True
         )
 
-        # Initialize logging
-        self.rewards_history = []
-        self.eval_rewards_history = []
-        self.episode_length_history = []
-        self.loss_history = []
+        # Initialize TensorBoard writer (log_dir may be updated by checkpoint)
+        self.writer = None
+
+        # Load checkpoint if provided
+        self.start_episode = 0
+        self.total_steps = 0
+        if checkpoint_path:
+            self.load_checkpoint(checkpoint_path)
+            if self.debug_config['print_minimal']:
+                print(f"Resumed training from checkpoint: {checkpoint_path}")
+                print(f"Starting from episode {self.start_episode}, total steps {self.total_steps}")
+
+        # Initialize TensorBoard writer if not set by checkpoint
+        if self.writer is None:
+            os.makedirs(self.log_dir, exist_ok=True)
+            self.writer = SummaryWriter(log_dir=self.log_dir)
+
+    def save_random_state(self):
+        """Save random states for reproducibility"""
+        return {
+            'python': random.getstate(),
+            'numpy': np.random.get_state(),
+            'torch': torch.get_rng_state(),
+            'cuda': torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+        }
+
+    def load_random_state(self, state):
+        """Load random states for reproducibility"""
+        random.setstate(state['python'])
+        np.random.set_state(state['numpy'])
+        torch.set_rng_state(state['torch'])
+        if state['cuda'] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state(state['cuda'])
+
+    def save_checkpoint(self, episode, total_steps):
+        """Save a checkpoint of the current training state"""
+        checkpoint_path = os.path.join(self.save_dir, f'checkpoint_episode_{episode}.pth')
+        checkpoint = {
+            'episode': episode,
+            'total_steps': total_steps,
+            'policy_state_dict': self.agent.policy.state_dict(),
+            'q1_state_dict': self.agent.q1.state_dict(),
+            'q2_state_dict': self.agent.q2.state_dict(),
+            'q1_target_state_dict': self.agent.q1_target.state_dict(),
+            'q2_target_state_dict': self.agent.q2_target.state_dict(),
+            'policy_optimizer_state_dict': self.agent.policy_optimizer.state_dict(),
+            'q1_optimizer_state_dict': self.agent.q1_optimizer.state_dict(),
+            'q2_optimizer_state_dict': self.agent.q2_optimizer.state_dict(),
+            'alpha': self.agent.alpha,
+            'log_alpha': self.agent.log_alpha if self.agent.automatic_entropy_tuning else None,
+            'alpha_optimizer_state_dict': self.agent.alpha_optimizer.state_dict() if self.agent.automatic_entropy_tuning else None,
+            'replay_buffer': (
+                self.agent.replay_buffer.states[:self.agent.replay_buffer.size],
+                self.agent.replay_buffer.actions[:self.agent.replay_buffer.size],
+                self.agent.replay_buffer.rewards[:self.agent.replay_buffer.size],
+                self.agent.replay_buffer.next_states[:self.agent.replay_buffer.size],
+                self.agent.replay_buffer.dones[:self.agent.replay_buffer.size]
+            ),
+            'replay_buffer_size': self.agent.replay_buffer.size,
+            'replay_buffer_pos': self.agent.replay_buffer.pos,
+            'replay_buffer_rng': self.agent.replay_buffer.rng.__getstate__(),
+            'random_state': self.save_random_state(),
+            'log_dir': self.log_dir
+        }
+        torch.save(checkpoint, checkpoint_path)
+        if self.debug_config['print_minimal']:
+            print(f"Saved checkpoint to {checkpoint_path}")
+
+    def load_checkpoint(self, checkpoint_path):
+        """Load a checkpoint to resume training"""
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint path {checkpoint_path} does not exist")
+
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
+
+        # Load agent state
+        self.agent.policy.load_state_dict(checkpoint['policy_state_dict'])
+        self.agent.q1.load_state_dict(checkpoint['q1_state_dict'])
+        self.agent.q2.load_state_dict(checkpoint['q2_state_dict'])
+        self.agent.q1_target.load_state_dict(checkpoint['q1_target_state_dict'])
+        self.agent.q2_target.load_state_dict(checkpoint['q2_target_state_dict'])
+        self.agent.policy_optimizer.load_state_dict(checkpoint['policy_optimizer_state_dict'])
+        self.agent.q1_optimizer.load_state_dict(checkpoint['q1_optimizer_state_dict'])
+        self.agent.q2_optimizer.load_state_dict(checkpoint['q2_optimizer_state_dict'])
+        self.agent.alpha = checkpoint['alpha']
+        if self.agent.automatic_entropy_tuning and 'log_alpha' in checkpoint:
+            self.agent.log_alpha = checkpoint['log_alpha']
+            self.agent.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
+
+        # Load replay buffer
+        if 'replay_buffer' in checkpoint:
+            states, actions, rewards, next_states, dones = checkpoint['replay_buffer']
+            self.agent.replay_buffer.states[:len(states)] = states
+            self.agent.replay_buffer.actions[:len(actions)] = actions
+            self.agent.replay_buffer.rewards[:len(rewards)] = rewards
+            self.agent.replay_buffer.next_states[:len(next_states)] = next_states
+            self.agent.replay_buffer.dones[:len(dones)] = dones
+            self.agent.replay_buffer.size = checkpoint['replay_buffer_size']
+            self.agent.replay_buffer.pos = checkpoint['replay_buffer_pos']
+            self.agent.replay_buffer.rng.__setstate__(checkpoint['replay_buffer_rng'])
+
+        # Load random state
+        if 'random_state' in checkpoint:
+            self.load_random_state(checkpoint['random_state'])
+
+        # Load training progress
+        self.start_episode = checkpoint.get('episode', 0)
+        self.total_steps = checkpoint.get('total_steps', 0)
+
+        # Load log directory for TensorBoard continuity
+        self.log_dir = checkpoint.get('log_dir', self.log_dir)
+        self.writer = SummaryWriter(log_dir=self.log_dir)
 
     def log_episode_summary(self, episode, total_steps, episode_reward, episode_length, rolling_reward):
         """Log episode statistics to TensorBoard"""
@@ -108,6 +215,7 @@ class SACTrainer:
         self.writer.add_scalar('Losses/Policy', mean_losses['policy'], episode)
         self.writer.add_scalar('Actions/Mean', action_mean, episode)
         self.writer.add_scalar('Actions/Std', action_std, episode)
+        self.writer.add_scalar('Hyperparams/Alpha', self.agent.alpha, episode)
 
         # Clear episode statistics for next episode
         for key in self.episode_stats:
@@ -163,14 +271,7 @@ class SACTrainer:
         if self.debug_config['print_minimal']:
             print(f"Saved best model to {save_path}")
 
-    def save_checkpoint(self, episode, total_steps):
-        """Save a checkpoint of the current training state"""
-        checkpoint_path = os.path.join(self.save_dir, f'checkpoint_episode_{episode}.pth')
-        self.agent.save_checkpoint(checkpoint_path, episode, total_steps)
-        if self.debug_config['print_minimal']:
-            print(f"Saved checkpoint to {checkpoint_path}")
-
-    def train(self, start_episode=0, total_steps=0):
+    def train(self, start_episode=None, total_steps=None):
         """
         Main training loop for SAC algorithm.
 
@@ -178,6 +279,12 @@ class SACTrainer:
             start_episode (int): Episode number to start/resume from
             total_steps (int): Total number of steps taken in previous training
         """
+        # Use loaded checkpoint values if not provided
+        if start_episode is None:
+            start_episode = self.start_episode
+        if total_steps is None:
+            total_steps = self.total_steps
+
         best_eval_reward = getattr(self, 'best_eval_reward', float('-inf'))
         early_stop_patience = 50
         no_improvement_count = 0
@@ -189,7 +296,7 @@ class SACTrainer:
             print(f"Save directory: {self.save_dir}, Log directory: {self.log_dir}")
             print(f"Total steps so far: {total_steps}")
 
-        for episode in range(start_episode, self.max_episodes):
+        for episode in range(start_episode + 1, self.max_episodes + 1):
             state, _ = self.env.reset()
             episode_reward = 0
             episode_steps = 0
@@ -219,17 +326,12 @@ class SACTrainer:
                     for _ in range(self.updates_per_step):
                         update_info = self.agent.update_parameters(self.batch_size)
                         self.update_episode_stats(update_info, action)
-                        self.loss_history.append(update_info)
 
                 if episode_steps >= self.max_steps:
                     done = True
 
-            # Store episode information
-            self.rewards_history.append(episode_reward)
-            self.episode_length_history.append(episode_steps)
-            rolling_reward.append(episode_reward)
-
             # Log episode information to TensorBoard
+            rolling_reward.append(episode_reward)
             self.log_episode_summary(
                 episode,
                 total_steps,
@@ -238,10 +340,9 @@ class SACTrainer:
                 np.mean(rolling_reward) if rolling_reward else episode_reward
             )
 
-            # Evaluate policy
+            # Evaluate policy and save checkpoint
             if episode % self.eval_interval == 0 and episode > 2:
                 eval_reward, eval_std = self.evaluate_policy(episode)
-                self.eval_rewards_history.append(eval_reward)
 
                 # Save if best performance
                 if eval_reward > best_eval_reward:
@@ -252,6 +353,10 @@ class SACTrainer:
                     no_improvement_count += 1
 
                 # Save checkpoint
+                self.save_checkpoint(episode, total_steps)
+
+            # Save checkpoint at the last episode
+            if episode == self.max_episodes - 1:
                 self.save_checkpoint(episode, total_steps)
 
             # Early stopping check
@@ -266,28 +371,16 @@ class SACTrainer:
             print(f"Best evaluation reward: {best_eval_reward:.2f}")
             print(f"Final average reward: {np.mean(rolling_reward):.2f}")
 
-        # Save training history
-        self.save_training_history()
         # Close TensorBoard writer
         self.writer.close()
 
-    def save_training_history(self):
-        """Saves training metrics to a JSON file"""
-        history = {
-            'rewards': self.rewards_history,
-            'eval_rewards': self.eval_rewards_history,
-            'episode_lengths': self.episode_length_history,
-            'losses': self.loss_history
-        }
-
-        save_path = os.path.join(self.save_dir, 'training_history.json')
-        with open(save_path, 'w') as f:
-            json.dump(history, f)
-        if self.debug_config['print_minimal']:
-            print(f"Saved training history to {save_path}")
-
 if __name__ == "__main__":
-    # Initialize trainer with default parameters
-    trainer = SACTrainer()
+    import argparse
+    parser = argparse.ArgumentParser(description="Train SAC on Pendulum-v1 with TensorBoard logging")
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint to resume training')
+    args = parser.parse_args()
+
+    # Initialize trainer with optional checkpoint
+    trainer = SACTrainer(checkpoint_path=args.checkpoint)
     # Start training
     trainer.train()
