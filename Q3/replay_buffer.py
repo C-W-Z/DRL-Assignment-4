@@ -10,15 +10,6 @@ class ReplayBuffer:
         action_dim: int = 21,
         seed: Optional[Union[int, np.random.SeedSequence]] = None
     ) -> None:
-        """
-        Initialize the replay buffer with pre-allocated NumPy arrays.
-
-        Args:
-            capacity (int): Maximum number of experiences to store (default: 1,000,000).
-            state_dim (int): Dimension of the state vector (default: 67 for humanoid-walk).
-            action_dim (int): Dimension of the action vector (default: 21 for humanoid-walk).
-            seed (Optional[Union[int, np.random.SeedSequence]]): Seed for random number generator.
-        """
         self.capacity       = capacity
         self.state_dim      = state_dim
         self.action_dim     = action_dim
@@ -41,7 +32,6 @@ class ReplayBuffer:
     ) -> None:
         """
         Store a new experience in the replay buffer.
-
         Args:
             state (np.ndarray): Current state, shape (state_dim,).
             action (np.ndarray): Action taken, shape (action_dim,).
@@ -61,10 +51,8 @@ class ReplayBuffer:
     def sample(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Randomly sample a batch of experiences from the buffer.
-
         Args:
             batch_size (int): Number of experiences to sample.
-
         Returns:
             Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
                 - states: Batch of states, shape (batch_size, state_dim).
@@ -85,7 +73,6 @@ class ReplayBuffer:
     def __len__(self) -> int:
         """
         Return the current size of the replay buffer.
-
         Returns:
             int: Number of experiences stored.
         """
@@ -94,7 +81,6 @@ class ReplayBuffer:
     def state_dict(self) -> Dict[str, Any]:
         """
         Return a dictionary containing the replay buffer's state for checkpointing.
-
         Returns:
             Dict[str, Any]: Dictionary with buffer data and random number generator state.
         """
@@ -112,7 +98,6 @@ class ReplayBuffer:
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         """
         Load the replay buffer's state from a dictionary.
-
         Args:
             state_dict (Dict[str, Any]): Dictionary containing buffer data and RNG state.
         """

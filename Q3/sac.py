@@ -111,7 +111,7 @@ class Critic(nn.Module):
         return self.network(x)                  # Shape: (batch_size, 1)
 
 class ICM(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int=256):
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int=256, eta: float=1.0):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -129,8 +129,8 @@ class ICM(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(512, hidden_dim)
         )
-
         self.apply(_init_weights)
+        self.eta = eta
 
     def forward(
         self,
@@ -162,13 +162,13 @@ class ICM(nn.Module):
         inverse_input    = torch.cat([state_features, next_state_features], dim=-1) # Shape: (batch_size, feature_dim * 2)
         predicted_action = self.inverse_model(inverse_input)                        # Shape: (batch_size, action_dim)
 
-        with torch.no_grad():
-            # Compute intrinsic reward (forward model prediction error)
-            intrinsic_reward = 0.5 * (next_state_features - predicted_next_features).pow(2).mean(dim=-1, keepdim=True)
-
         # Compute losses
         forward_loss = F.mse_loss(predicted_next_features, next_state_features)
         inverse_loss = F.mse_loss(predicted_action, action)
+
+        with torch.no_grad():
+            # Compute intrinsic reward (forward model prediction error)
+            intrinsic_reward = self.eta * forward_loss.detach()
 
         return intrinsic_reward, forward_loss, inverse_loss
 
@@ -216,9 +216,8 @@ class SAC:
         self.alpha_optimizer    = optim.Adam([self.log_alpha]        , lr=lr)
 
         # ICM
-        self.icm            = ICM(state_dim, action_dim, hidden_dim)          .to(device)
+        self.icm            = ICM(state_dim, action_dim, hidden_dim, icm_eta) .to(device)
         self.icm_optimizer  = optim.Adam(self.icm.parameters()       , lr=lr)
-        self.icm_eta        = icm_eta
         self.icm_beta       = icm_beta
 
         # Replay buffer
@@ -255,8 +254,7 @@ class SAC:
             q2_next         = self.q2_target(next_state_b, next_actions)
             q_next          = torch.min(q1_next, q2_next)
             value_target    = q_next - self.alpha * next_log_probs
-            total_reward    = reward_b + self.icm_eta * intrinsic_reward
-            q_target        = total_reward + (1 - done_b) * self.gamma * value_target
+            q_target        = reward_b + intrinsic_reward + (1 - done_b) * self.gamma * value_target
 
         q1_pred = self.q1(state_b, action_b)
         q2_pred = self.q2(state_b, action_b)

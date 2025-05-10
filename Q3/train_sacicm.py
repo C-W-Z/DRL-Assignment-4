@@ -50,6 +50,7 @@ def train(
     log_dir: str,
     save_dir: str,
     save_interval,
+    env_seed: int,
 ):
     print(f"Start Training from Steps: {total_steps}")
 
@@ -57,7 +58,7 @@ def train(
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir)
 
-    env = make_dmc_env('humanoid-walk', np.random.randint(0, 1000000), flatten=True, use_pixels=False)
+    env = make_dmc_env('humanoid-walk', env_seed, flatten=True, use_pixels=False)
 
     rolling_rewards = deque(maxlen=100)
 
@@ -111,15 +112,15 @@ if __name__ == "__main__":
         action_bounds   = (-1.0, 1.0),
         gamma           = 0.99,
         tau             = 0.005,
-        lr              = 2.5e-4,
+        lr              = 1e-4,
         alpha           = 0.2,
-        icm_eta         = 0.1,
+        icm_eta         = 1.0,
         icm_beta        = 0.2,
         buffer_capacity = 1_000_000,
     )
 
     save_dir        = "./checkpoints"
-    checkpoint_path = "./checkpoints/episode_10.pth"
+    checkpoint_path = "./checkpoints/episode_{}.pth"
     start_episode, total_steps, log_dir = load_checkpoint(agent, checkpoint_path)
     if start_episode is None:
         start_episode = 0
@@ -127,6 +128,10 @@ if __name__ == "__main__":
         total_steps = 0
     if log_dir is None:
         log_dir = f"Logs/run_{int(time.time())}"
+
+    # env_seed = np.random.randint(0, 1000000)
+    env_seed = 42
+    print(f"Env Seed = {env_seed}")
 
     train(
         agent           = agent,
@@ -136,5 +141,6 @@ if __name__ == "__main__":
         batch_size      = 128,
         log_dir         = log_dir,
         save_dir        = save_dir,
-        save_interval   = 100,
+        save_interval   = 50,
+        env_seed        = env_seed,
     )
