@@ -1,4 +1,5 @@
 
+import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -121,12 +122,12 @@ class ICM(nn.Module):
         )
         self.inverse_model = nn.Sequential(
             nn.Linear(hidden_dim * 2, 512),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(512, action_dim)
         )
         self.forward_model = nn.Sequential(
             nn.Linear(hidden_dim + action_dim, 512),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Linear(512, hidden_dim)
         )
         self.apply(_init_weights)
@@ -212,7 +213,7 @@ class SAC:
 
         # Automatic entropy tuning
         self.target_entropy     = -action_dim  # Target entropy = -|A|
-        self.log_alpha          = torch.zeros(1, requires_grad=True  , device=device)
+        self.log_alpha          = torch.zeros(0.0, requires_grad=True, device=device)
         self.alpha_optimizer    = optim.Adam([self.log_alpha]        , lr=lr)
 
         # ICM
@@ -225,12 +226,12 @@ class SAC:
         # Replay buffer
         self.replay_buffer = ReplayBuffer(capacity=buffer_capacity, state_dim=state_dim, action_dim=action_dim, device=device)
 
-    def select_action(self, state: torch.Tensor, evaluate: bool=False) -> float:
-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+    def select_action(self, state: np.ndarray, evaluate: bool=False) -> float:
+        state = torch.Tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             if evaluate: action    = self.policy.act(state)
             else:        action, _ = self.policy.sample(state)
-            return action.cpu().numpy()[0]
+            return action.cpu().numpy().flatten()
 
     def soft_update(self) -> None:
         for target_p, p in zip(self.q1_target.parameters(), self.q1.parameters()):

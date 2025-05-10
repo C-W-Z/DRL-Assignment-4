@@ -42,6 +42,7 @@ def load_checkpoint(agent: SAC, checkpoint_path: str):
     return start_episode, total_steps, log_dir
 
 def train(
+    env,
     agent: SAC,
     start_episode: int,
     max_episodes: int,
@@ -50,15 +51,12 @@ def train(
     log_dir: str,
     save_dir: str,
     save_interval,
-    env_seed: int,
 ):
     print(f"Start Training from Steps: {total_steps}")
 
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir)
-
-    env = make_dmc_env('humanoid-walk', env_seed, flatten=True, use_pixels=False)
 
     rolling_rewards = deque(maxlen=100)
 
@@ -90,8 +88,8 @@ def train(
                 writer.add_scalar('Losses/Forward', forward_loss, total_steps)
                 writer.add_scalar('Losses/Inverse', inverse_loss, total_steps)
                 writer.add_scalar('Rewards/Intrinsic', intrinsic_reward, total_steps)
-                writer.add_scalar('Misc/Alpha', agent.alpha, total_steps)
-                writer.add_scalar('Action/Mean', np.mean(action), total_steps)
+                # writer.add_scalar('Misc/Alpha', agent.alpha, total_steps)
+                # writer.add_scalar('Action/Mean', np.mean(action), total_steps)
                 writer.add_scalar('Action/Std', np.std(action), total_steps)
 
         rolling_rewards.append(episode_reward)
@@ -105,11 +103,21 @@ def train(
     writer.close()
 
 if __name__ == "__main__":
+    import random
+    # seed = np.random.randint(0, 1000000)
+    seed = 42
+    print(f"Seed = {seed}")
+    random.seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    env = make_dmc_env('humanoid-walk', seed, flatten=True, use_pixels=False)
+
     agent = SAC(
-        state_dim       = 67,
-        action_dim      = 21,
+        state_dim       = env.observation_space.shape[0],
+        action_dim      = env.action_space.shape[0],
         hidden_dim      = 256,
-        action_bounds   = (-1.0, 1.0),
+        action_bounds   = (float(env.action_space.low[0]), float(env.action_space.high[0])),
         gamma           = 0.99,
         tau             = 0.005,
         lr              = 1e-4,
@@ -130,14 +138,8 @@ if __name__ == "__main__":
     if log_dir is None:
         log_dir = f"Logs/run_{int(time.time())}"
 
-    # env_seed = np.random.randint(0, 1000000)
-    env_seed = 42
-    print(f"Seed = {env_seed}")
-
-    torch.manual_seed(env_seed)
-    np.random.seed(env_seed)
-
     train(
+        env             = env,
         agent           = agent,
         start_episode   = start_episode,
         max_episodes    = 10_000,
@@ -146,5 +148,4 @@ if __name__ == "__main__":
         log_dir         = log_dir,
         save_dir        = save_dir,
         save_interval   = 50,
-        env_seed        = env_seed,
     )
