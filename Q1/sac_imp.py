@@ -5,7 +5,7 @@ from networks_model1 import Critic, Actor
 from replay_buffer import ReplayBuffer
 
 class SAC:
-    """Soft Actor-GaussianPolicy implementation for continuous action spaces"""
+    """Soft Actor-Critic implementation for continuous action spaces"""
     def __init__(
         self,
         state_dim,
@@ -13,7 +13,7 @@ class SAC:
         hidden_dim=256,
         gamma=0.99,
         tau=0.005,
-        lr=3e-4,
+        lr=1e-3,  # 增加學習率
         alpha=0.2,
         automatic_entropy_tuning=True,
         device="cuda" if torch.cuda.is_available() else "cpu"
@@ -48,8 +48,8 @@ class SAC:
             self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
             self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
 
-        # Initialize replay buffer
-        self.replay_buffer = ReplayBuffer()
+        # Initialize replay buffer for Pendulum-v1
+        self.replay_buffer = ReplayBuffer(capacity=1000000, state_dim=state_dim, action_dim=action_dim)
 
     def select_action(self, state, evaluate=False):
         """Select an action from the input state"""
@@ -62,16 +62,14 @@ class SAC:
                 action = torch.tanh(mean)  # Apply tanh
                 # scale the actions
                 action = action * self.policy.action_scale + self.policy.action_bias
-                #print("action choosen during eval",action.cpu().numpy()[0])
                 return action.cpu().numpy()[0]
         else:
             # During training, sample from the policy
             with torch.no_grad():
                 action, _ = self.policy.sample(state)
-                #print("action choosen during training",action.cpu().numpy()[0])
                 return action.cpu().numpy()[0]
 
-    def update_parameters(self, batch_size=256):
+    def update_parameters(self, batch_size=64):
         """Update the networks using a batch of experiences"""
         # Sample from replay buffer
         state_batch, action_batch, reward_batch, next_state_batch, done_batch = \
@@ -80,9 +78,9 @@ class SAC:
         # Convert to tensors
         state_batch = torch.FloatTensor(state_batch).to(self.device)
         action_batch = torch.FloatTensor(action_batch).to(self.device)
-        reward_batch = torch.FloatTensor(reward_batch).unsqueeze(1).to(self.device)
+        reward_batch = torch.FloatTensor(reward_batch).to(self.device)
         next_state_batch = torch.FloatTensor(next_state_batch).to(self.device)
-        done_batch = torch.FloatTensor(done_batch).unsqueeze(1).to(self.device)
+        done_batch = torch.FloatTensor(done_batch).to(self.device)
 
         with torch.no_grad():
             # Sample next actions and their log probs for next states
@@ -172,8 +170,6 @@ class SAC:
         self.q2_target.load_state_dict(checkpoint['q2_target_state_dict'])
         self.alpha = checkpoint['alpha']
 
-    """------------------------- NEW CODE ADDED FOR THE CHECKPOINT FUNCTIONALITY -DATE:22/12/2024 --------------------------"""
-
     def save_checkpoint(self, path, episode, total_steps, replay_buffer=True):
         checkpoint = {
             'episode': episode,
@@ -196,9 +192,15 @@ class SAC:
 
         # Optionally save replay buffer
         if replay_buffer:
-            checkpoint['replay_buffer'] = self.replay_buffer.buffer
+            checkpoint['replay_buffer'] = (
+                self.replay_buffer.states[:self.replay_buffer.size],
+                self.replay_buffer.actions[:self.replay_buffer.size],
+                self.replay_buffer.rewards[:self.replay_buffer.size],
+                self.replay_buffer.next_states[:self.replay_buffer.size],
+                self.replay_buffer.dones[:self.replay_buffer.size]
+            )
 
-            torch.save(checkpoint, path)
+        torch.save(checkpoint, path)
 
     def load_checkpoint(self, path, load_replay_buffer=True):
         checkpoint = torch.load(path)
@@ -225,9 +227,16 @@ class SAC:
         if 'alpha_optimizer_state_dict' in checkpoint:
             self.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer_state_dict'])
 
-        #    Optionally load replay buffer
+        # Optionally load replay buffer
         if load_replay_buffer and 'replay_buffer' in checkpoint:
-            self.replay_buffer.buffer = checkpoint['replay_buffer']
+            states, actions, rewards, next_states, dones = checkpoint['replay_buffer']
+            self.replay_buffer.states[:len(states)] = states
+            self.replay_buffer.actions[:len(actions)] = actions
+            self.replay_buffer.rewards[:len(rewards)] = rewards
+            self.replay_buffer.next_states[:len(next_states)] = next_states
+            self.replay_buffer.dones[:len(dones)] = dones
+            self.replay_buffer.size = len(states)
+            self.replay_buffer.pos = self.replay_buffer.size % self.replay_buffer.capacity
 
         # Return episode and total steps if they exist, otherwise return 0
         return checkpoint.get('episode', 0), checkpoint.get('total_steps', 0)
