@@ -43,16 +43,17 @@ def load_checkpoint(agent: SAC, checkpoint_path: str):
 
 def train(
     agent: SAC,
-    start_episode,
-    max_episodes,
-    total_steps,
-    batch_size,
+    start_episode: int,
+    max_episodes: int,
+    total_steps: int,
+    batch_size: int,
     log_dir: str,
+    save_dir: str,
     save_interval,
 ):
     print(f"Start Training from Steps: {total_steps}")
 
-    # Initialize TensorBoard writer if not set by checkpoint
+    os.makedirs(save_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir)
 
@@ -98,7 +99,7 @@ def train(
 
         # Save checkpoint
         if episode % save_interval == 0:
-            save_checkpoint(episode, total_steps)
+            save_checkpoint(agent, episode, total_steps, log_dir, save_dir)
 
     writer.close()
 
@@ -134,5 +135,6 @@ if __name__ == "__main__":
         total_steps     = total_steps,
         batch_size      = 128,
         log_dir         = log_dir,
+        save_dir        = save_dir,
         save_interval   = 100,
     )
