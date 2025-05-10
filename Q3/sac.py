@@ -184,6 +184,8 @@ class SAC:
         gamma           : float                 = 0.99,
         tau             : float                 = 0.005,
         alpha           : float                 = 0.2,
+        icm_eta         : float                 = 0.1,
+        icm_beta         : float                = 0.2,
         buffer_capacity : int                   = 1_000_000,
         device          : torch.device          = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ) -> None:
@@ -216,8 +218,8 @@ class SAC:
         # ICM
         self.icm            = ICM(state_dim, action_dim, hidden_dim)          .to(device)
         self.icm_optimizer  = optim.Adam(self.icm.parameters()       , lr=lr)
-        self.icm_eta        = 0.1
-        self.icm_beta       = 0.2
+        self.icm_eta        = icm_eta
+        self.icm_beta       = icm_beta
 
         # Replay buffer
         self.replay_buffer = ReplayBuffer(capacity=buffer_capacity, state_dim=state_dim, action_dim=action_dim)
@@ -291,9 +293,9 @@ class SAC:
 
         # ICM Learn
         icm_loss = (1 - self.icm_beta) * inverse_loss + self.icm_beta * forward_loss
-        self.icm_opt.zero_grad()
+        self.icm_optimizer.zero_grad()
         icm_loss.backward()
-        self.icm_opt.step()
+        self.icm_optimizer.step()
 
         self.soft_update()
 
