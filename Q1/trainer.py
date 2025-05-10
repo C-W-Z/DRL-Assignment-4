@@ -4,27 +4,28 @@ from sac_imp import SAC
 from collections import deque
 import json
 import os
+from torch.utils.tensorboard import SummaryWriter
 
 class SACTrainer:
-    """Handles the training process for SAC algorithm"""
+    """Handles the training process for SAC algorithm with TensorBoard logging"""
     def __init__(
         self,
         env_name='Pendulum-v1',
-        max_episodes=200,  # 減少回合數，Pendulum-v1 收斂較快
-        max_steps=200,     # 每回合最大步數，Pendulum-v1 通常較短
-        batch_size=64,     # 小批量，適合簡單環境
-        eval_interval=10,  # 頻繁評估
+        max_episodes=200,
+        max_steps=200,
+        batch_size=64,
+        eval_interval=10,
         updates_per_step=1,
-        start_steps=1000,  # 減少初始隨機步數
-        eval_episodes=10,  # 減少評估回合數
-        debug_config=None,
-        save_dir='./checkpoints',
+        start_steps=1000,
+        eval_episodes=10,
+        save_dir='checkpoints',
+        log_dir='runs',
+        debug_config=None
     ):
-        # Default debugging configuration with more focused outputs
+        # Default debugging configuration
         self.debug_config = {
-            'print_episode_summary': True,     # Summary of each episode
-            'print_eval_summary': True,        # Summary of evaluation runs
-            'print_periodic_stats': True       # Periodic training statistics
+            'log_tensorboard': True,  # Enable TensorBoard logging
+            'print_minimal': True     # Minimal console output
         }
         if debug_config is not None:
             self.debug_config.update(debug_config)
@@ -47,9 +48,14 @@ class SACTrainer:
         self.start_steps = start_steps
         self.eval_episodes = eval_episodes
         self.save_dir = save_dir
+        self.log_dir = log_dir
 
-        # Create save directory if it doesn't exist
+        # Create save and log directories
         os.makedirs(save_dir, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Initialize TensorBoard writer
+        self.writer = SummaryWriter(log_dir=log_dir)
 
         # Create environments
         self.env = gym.make(env_name)
@@ -77,8 +83,9 @@ class SACTrainer:
         self.episode_length_history = []
         self.loss_history = []
 
-    def print_episode_summary(self, episode, total_steps, episode_reward, episode_length, rolling_reward):
-        if not self.debug_config['print_episode_summary']:
+    def log_episode_summary(self, episode, total_steps, episode_reward, episode_length, rolling_reward):
+        """Log episode statistics to TensorBoard"""
+        if not self.debug_config['log_tensorboard']:
             return
 
         # Calculate mean losses for the episode
@@ -89,16 +96,18 @@ class SACTrainer:
         }
 
         # Calculate action statistics
-        action_means = np.mean(self.episode_stats['action_means'], axis=0) if self.episode_stats['action_means'] else 0.0
-        action_stds = np.mean(self.episode_stats['action_stds'], axis=0) if self.episode_stats['action_stds'] else 0.0
+        action_mean = np.mean(self.episode_stats['action_means']) if self.episode_stats['action_means'] else 0.0
+        action_std = np.mean(self.episode_stats['action_stds']) if self.episode_stats['action_stds'] else 0.0
 
-        print(f"\n{'='*50}")
-        print(f"Episode {episode} Summary:")
-        print(f"Steps: {total_steps} | Length: {episode_length}")
-        print(f"Reward: {episode_reward:.2f} | Rolling Avg: {rolling_reward:.2f}")
-        print(f"Mean Losses - Q1: {mean_losses['q1']:.4f}, Q2: {mean_losses['q2']:.4f}, Policy: {mean_losses['policy']:.4f}")
-        print(f"Action Mean: {action_means:.4f} | Action Std: {action_stds:.4f}")
-        print(f"{'='*50}")
+        # Log to TensorBoard
+        self.writer.add_scalar('Rewards/Episode', episode_reward, episode)
+        self.writer.add_scalar('Rewards/Rolling_Avg', rolling_reward, episode)
+        self.writer.add_scalar('Episode/Length', episode_length, episode)
+        self.writer.add_scalar('Losses/Q1', mean_losses['q1'], episode)
+        self.writer.add_scalar('Losses/Q2', mean_losses['q2'], episode)
+        self.writer.add_scalar('Losses/Policy', mean_losses['policy'], episode)
+        self.writer.add_scalar('Actions/Mean', action_mean, episode)
+        self.writer.add_scalar('Actions/Std', action_std, episode)
 
         # Clear episode statistics for next episode
         for key in self.episode_stats:
@@ -115,11 +124,8 @@ class SACTrainer:
             self.episode_stats['action_means'].append(np.mean(action))
             self.episode_stats['action_stds'].append(np.std(action))
 
-    def debug_print(self, category, message):
-        if self.debug_config.get(f'print_{category}', False):
-            print(f"[DEBUG-{category}] {message}")
-
-    def evaluate_policy(self):
+    def evaluate_policy(self, episode):
+        """Evaluate the policy and log results to TensorBoard"""
         eval_rewards = []
         eval_lengths = []
 
@@ -143,12 +149,10 @@ class SACTrainer:
         mean_reward = np.mean(eval_rewards)
         std_reward = np.std(eval_rewards)
 
-        if self.debug_config['print_eval_summary']:
-            print(f"\n{'='*50}")
-            print(f"Evaluation Summary:")
-            print(f"Mean Reward: {mean_reward:.2f} ± {std_reward:.2f}")
-            print(f"Mean Episode Length: {np.mean(eval_lengths):.1f}")
-            print(f"{'='*50}")
+        if self.debug_config['log_tensorboard']:
+            self.writer.add_scalar('Rewards/Eval_Mean', mean_reward, episode)
+            self.writer.add_scalar('Rewards/Eval_Std', std_reward, episode)
+            self.writer.add_scalar('Episode/Eval_Length', np.mean(eval_lengths), episode)
 
         return mean_reward, std_reward
 
@@ -156,13 +160,15 @@ class SACTrainer:
         """Save the best model based on evaluation reward"""
         save_path = os.path.join(self.save_dir, 'best_model.pth')
         self.agent.save(save_path)
-        print(f"Saved best model to {save_path}")
+        if self.debug_config['print_minimal']:
+            print(f"Saved best model to {save_path}")
 
     def save_checkpoint(self, episode, total_steps):
         """Save a checkpoint of the current training state"""
         checkpoint_path = os.path.join(self.save_dir, f'checkpoint_episode_{episode}.pth')
         self.agent.save_checkpoint(checkpoint_path, episode, total_steps)
-        print(f"Saved checkpoint to {checkpoint_path}")
+        if self.debug_config['print_minimal']:
+            print(f"Saved checkpoint to {checkpoint_path}")
 
     def train(self, start_episode=0, total_steps=0):
         """
@@ -177,16 +183,11 @@ class SACTrainer:
         no_improvement_count = 0
         rolling_reward = deque(maxlen=100)
 
-        print(f"\nStarting training from episode {start_episode}")
-        print(f"State dim: {self.env.observation_space.shape[0]}")
-        print(f"Action dim: {self.env.action_space.shape[0]}")
-        print(f"Training parameters:")
-        print(f"  Max episodes: {self.max_episodes}")
-        print(f"  Batch size: {self.batch_size}")
-        print(f"  Updates per step: {self.updates_per_step}")
-        print(f"  Save directory: {self.save_dir}")
-        print("\n" + "="*50)
-        print(f"Total steps so far: {total_steps}")
+        if self.debug_config['print_minimal']:
+            print(f"\nStarting training for {self.env_name} from episode {start_episode}")
+            print(f"State dim: {self.env.observation_space.shape[0]}, Action dim: {self.env.action_space.shape[0]}")
+            print(f"Save directory: {self.save_dir}, Log directory: {self.log_dir}")
+            print(f"Total steps so far: {total_steps}")
 
         for episode in range(start_episode, self.max_episodes):
             state, _ = self.env.reset()
@@ -228,8 +229,8 @@ class SACTrainer:
             self.episode_length_history.append(episode_steps)
             rolling_reward.append(episode_reward)
 
-            # Print episode information
-            self.print_episode_summary(
+            # Log episode information to TensorBoard
+            self.log_episode_summary(
                 episode,
                 total_steps,
                 episode_reward,
@@ -239,7 +240,7 @@ class SACTrainer:
 
             # Evaluate policy
             if episode % self.eval_interval == 0 and episode > 2:
-                eval_reward, eval_std = self.evaluate_policy()
+                eval_reward, eval_std = self.evaluate_policy(episode)
                 self.eval_rewards_history.append(eval_reward)
 
                 # Save if best performance
@@ -255,16 +256,20 @@ class SACTrainer:
 
             # Early stopping check
             if no_improvement_count >= early_stop_patience:
-                print("\nNo improvement for a while. Stopping training.")
+                if self.debug_config['print_minimal']:
+                    print("\nNo improvement for a while. Stopping training.")
                 break
 
-        print("\nTraining completed!")
-        print(f"Total steps: {total_steps}")
-        print(f"Best evaluation reward: {best_eval_reward:.2f}")
-        print(f"Final average reward: {np.mean(rolling_reward):.2f}")
+        if self.debug_config['print_minimal']:
+            print("\nTraining completed!")
+            print(f"Total steps: {total_steps}")
+            print(f"Best evaluation reward: {best_eval_reward:.2f}")
+            print(f"Final average reward: {np.mean(rolling_reward):.2f}")
 
         # Save training history
         self.save_training_history()
+        # Close TensorBoard writer
+        self.writer.close()
 
     def save_training_history(self):
         """Saves training metrics to a JSON file"""
@@ -278,7 +283,8 @@ class SACTrainer:
         save_path = os.path.join(self.save_dir, 'training_history.json')
         with open(save_path, 'w') as f:
             json.dump(history, f)
-        print(f"Saved training history to {save_path}")
+        if self.debug_config['print_minimal']:
+            print(f"Saved training history to {save_path}")
 
 if __name__ == "__main__":
     # Initialize trainer with default parameters
