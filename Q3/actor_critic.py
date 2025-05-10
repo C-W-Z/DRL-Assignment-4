@@ -106,9 +106,9 @@ class Actor(nn.Module):
         mean, log_std   = self.forward(state)
         std             = log_std.exp()         # Shape: (batch_size, action_dim)
 
-        normal          = torch.distributions.Normal(mean, std)
+        dist            = torch.distributions.Normal(mean, std)
         # Sample using reparameterization trick: x_t = mean + std * N(0, 1)
-        x_t             = normal.rsample()      # Shape: (batch_size, action_dim)
+        x_t             = dist.rsample()      # Shape: (batch_size, action_dim)
         # Apply tanh to squash output to [-1, 1]
         y_t             = torch.tanh(x_t)       # Shape: (batch_size, action_dim)
 
@@ -116,7 +116,7 @@ class Actor(nn.Module):
         action          = y_t * self.action_scale + self.action_bias  # Shape: (batch_size, action_dim)
 
         # Compute log probability of the sample
-        log_prob        = normal.log_prob(x_t)  # Shape: (batch_size, action_dim)
+        log_prob        = dist.log_prob(x_t)  # Shape: (batch_size, action_dim)
         # Adjust log probability for tanh transformation (Jacobian correction)
         log_prob       -= torch.log(self.action_scale * (1 - y_t.pow(2)) + self.epsilon)
         # Sum log probabilities across action dimensions
