@@ -9,11 +9,11 @@ class ReplayBuffer:
         self.pos            = 0
         self.size           = 0
         self.rng            = np.random.default_rng(seed)
-        self.states         = np.zeros((capacity, state_dim),   dtype=np.float32)
-        self.actions        = np.zeros((capacity, action_dim),  dtype=np.float32)
-        self.rewards        = np.zeros((capacity, 1),           dtype=np.float32)
-        self.next_states    = np.zeros((capacity, state_dim),   dtype=np.float32)
-        self.dones          = np.zeros((capacity, 1),           dtype=np.float32)
+        self.states         = np.zeros((capacity, state_dim ), dtype=np.float32)
+        self.actions        = np.zeros((capacity, action_dim), dtype=np.float32)
+        self.rewards        = np.zeros((capacity, 1         ), dtype=np.float32)
+        self.next_states    = np.zeros((capacity, state_dim ), dtype=np.float32)
+        self.dones          = np.zeros((capacity, 1         ), dtype=np.float32)
 
     def push(self, state, action, reward, next_state, done):
         idx                     = self.pos % self.capacity
@@ -28,11 +28,11 @@ class ReplayBuffer:
     def sample(self, batch_size):
         indices = self.rng.choice(self.size, size=batch_size, replace=True)
         return (
-            self.states[indices],
-            self.actions[indices],
-            self.rewards[indices],
+            self.states     [indices],
+            self.actions    [indices],
+            self.rewards    [indices],
             self.next_states[indices],
-            self.dones[indices]
+            self.dones      [indices]
         )
 
     def __len__(self):
@@ -42,20 +42,20 @@ class ReplayBuffer:
         return {
             'size'          : self.size,
             'pos'           : self.pos,
-            'states'        : self.states[:self.size],
-            'actions'       : self.actions[:self.size],
-            'rewards'       : self.rewards[:self.size],
+            'states'        : self.states     [:self.size],
+            'actions'       : self.actions    [:self.size],
+            'rewards'       : self.rewards    [:self.size],
             'next_states'   : self.next_states[:self.size],
-            'dones'         : self.dones[:self.size],
+            'dones'         : self.dones      [:self.size],
             'rng'           : self.rng.__getstate__(),
         }
 
     def load_state_dict(self, state_dict):
         self.size                       = state_dict['size']
         self.pos                        = state_dict['pos']
-        self.states[:self.size]         = state_dict['states']
-        self.actions[:self.size]        = state_dict['actions']
-        self.rewards[:self.size]        = state_dict['rewards']
+        self.states     [:self.size]    = state_dict['states']
+        self.actions    [:self.size]    = state_dict['actions']
+        self.rewards    [:self.size]    = state_dict['rewards']
         self.next_states[:self.size]    = state_dict['next_states']
-        self.dones[:self.size]          = state_dict['dones']
+        self.dones      [:self.size]    = state_dict['dones']
         self.rng.__setstate__(state_dict['rng'])
