@@ -111,7 +111,7 @@ class Critic(nn.Module):
         return self.network(x)                  # Shape: (batch_size, 1)
 
 class ICM(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int=256, eta: float=1.0):
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int=256):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -130,7 +130,6 @@ class ICM(nn.Module):
             nn.Linear(512, hidden_dim)
         )
         self.apply(_init_weights)
-        self.eta = eta
 
     def forward(
         self,
@@ -168,7 +167,7 @@ class ICM(nn.Module):
 
         with torch.no_grad():
             # Compute intrinsic reward (forward model prediction error)
-            intrinsic_reward = self.eta * forward_loss.detach()
+            intrinsic_reward = 0.5 * ((predicted_next_features - next_state_features) ** 2).mean(dim=-1, keepdim=True)
 
         return intrinsic_reward, forward_loss, inverse_loss
 
@@ -185,7 +184,8 @@ class SAC:
         tau             : float                 = 0.005,
         alpha           : float                 = 0.2,
         icm_eta         : float                 = 0.1,
-        icm_beta         : float                = 0.2,
+        forward_weight  : float                 = 1.0,
+        inverse_weight  : float                 = 0.1,
         buffer_capacity : int                   = 1_000_000,
         device          : torch.device          = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ) -> None:
@@ -216,12 +216,14 @@ class SAC:
         self.alpha_optimizer    = optim.Adam([self.log_alpha]        , lr=lr)
 
         # ICM
-        self.icm            = ICM(state_dim, action_dim, hidden_dim, icm_eta) .to(device)
+        self.icm            = ICM(state_dim, action_dim, hidden_dim) .to(device)
         self.icm_optimizer  = optim.Adam(self.icm.parameters()       , lr=lr)
-        self.icm_beta       = icm_beta
+        self.icm_eta        = icm_eta
+        self.forward_weight = forward_weight
+        self.inverse_weight = inverse_weight
 
         # Replay buffer
-        self.replay_buffer = ReplayBuffer(capacity=buffer_capacity, state_dim=state_dim, action_dim=action_dim)
+        self.replay_buffer = ReplayBuffer(capacity=buffer_capacity, state_dim=state_dim, action_dim=action_dim, device=device)
 
     def select_action(self, state: torch.Tensor, evaluate: bool=False) -> float:
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -239,12 +241,6 @@ class SAC:
     def learn(self, batch_size: int) -> None:
         state_b, action_b, reward_b, next_state_b, done_b = self.replay_buffer.sample(batch_size)
 
-        state_b         = torch.FloatTensor(state_b)     .to(self.device)
-        action_b        = torch.FloatTensor(action_b)    .to(self.device)
-        reward_b        = torch.FloatTensor(reward_b)    .to(self.device)
-        next_state_b    = torch.FloatTensor(next_state_b).to(self.device)
-        done_b          = torch.FloatTensor(done_b)      .to(self.device)
-
         intrinsic_reward, forward_loss, inverse_loss = self.icm(state_b, action_b, next_state_b)
 
         # Critic Learn
@@ -254,7 +250,7 @@ class SAC:
             q2_next         = self.q2_target(next_state_b, next_actions)
             q_next          = torch.min(q1_next, q2_next)
             value_target    = q_next - self.alpha * next_log_probs
-            q_target        = reward_b + intrinsic_reward + (1 - done_b) * self.gamma * value_target
+            q_target        = reward_b + self.icm_eta * intrinsic_reward + (1 - done_b) * self.gamma * value_target
 
         q1_pred = self.q1(state_b, action_b)
         q2_pred = self.q2(state_b, action_b)
@@ -290,7 +286,7 @@ class SAC:
         self.alpha = self.log_alpha.exp()
 
         # ICM Learn
-        icm_loss = (1 - self.icm_beta) * inverse_loss + self.icm_beta * forward_loss
+        icm_loss = self.forward_weight * forward_loss + self.inverse_weight * inverse_loss
         self.icm_optimizer.zero_grad()
         icm_loss.backward()
         self.icm_optimizer.step()

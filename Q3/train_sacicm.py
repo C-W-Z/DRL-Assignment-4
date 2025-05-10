@@ -75,7 +75,7 @@ def train(
             done = terminated or truncated
 
             # Store transition
-            agent.replay_buffer.push(state, action, reward, next_state, done)
+            agent.replay_buffer.push(state, action, reward, next_state, float(done))
 
             state = next_state
             episode_reward += reward
@@ -114,8 +114,9 @@ if __name__ == "__main__":
         tau             = 0.005,
         lr              = 1e-4,
         alpha           = 0.2,
-        icm_eta         = 1.0,
-        icm_beta        = 0.2,
+        icm_eta         = 0.1,
+        forward_weight  = 1.0,
+        inverse_weight  = 0.1,
         buffer_capacity = 1_000_000,
     )
 
@@ -131,7 +132,10 @@ if __name__ == "__main__":
 
     # env_seed = np.random.randint(0, 1000000)
     env_seed = 42
-    print(f"Env Seed = {env_seed}")
+    print(f"Seed = {env_seed}")
+
+    torch.manual_seed(env_seed)
+    np.random.seed(env_seed)
 
     train(
         agent           = agent,
