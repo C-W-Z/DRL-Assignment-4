@@ -122,12 +122,12 @@ class ICM(nn.Module):
         )
         self.inverse_model = nn.Sequential(
             nn.Linear(hidden_dim * 2, 512),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(512, action_dim)
         )
         self.forward_model = nn.Sequential(
             nn.Linear(hidden_dim + action_dim, 512),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Linear(512, hidden_dim)
         )
         self.apply(_init_weights)
