@@ -74,6 +74,21 @@ class Actor(nn.Module):
         log_std = torch.clamp(log_std, -20, 2)  # Clamped for numerical stability
         return mean, log_std
 
+    def act(self, state: torch.Tensor) -> torch.Tensor:
+        """
+        Get deterministic action
+
+        Args:
+            state (torch.Tensor): State tensor, shape (batch_size, state_dim).
+
+        Returns:
+            action (torch.Tensor): shape (batch_size, action_dim)
+        """
+        mean, _ = self.policy(state)
+        action  = torch.tanh(mean)
+        action  = action * self.policy.action_scale + self.policy.action_bias
+        return action
+
     def sample(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Sample actions from the Gaussian policy using the reparameterization trick.
