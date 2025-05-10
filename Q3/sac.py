@@ -213,7 +213,7 @@ class SAC:
 
         # Automatic entropy tuning
         self.target_entropy     = -action_dim  # Target entropy = -|A|
-        self.log_alpha          = torch.zeros(0.0, requires_grad=True, device=device)
+        self.log_alpha          = torch.zeros(1, requires_grad=True, device=device)
         self.alpha_optimizer    = optim.Adam([self.log_alpha]        , lr=lr)
 
         # ICM
@@ -227,7 +227,7 @@ class SAC:
         self.replay_buffer = ReplayBuffer(capacity=buffer_capacity, state_dim=state_dim, action_dim=action_dim, device=device)
 
     def select_action(self, state: np.ndarray, evaluate: bool=False) -> float:
-        state = torch.Tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        state = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             if evaluate: action    = self.policy.act(state)
             else:        action, _ = self.policy.sample(state)

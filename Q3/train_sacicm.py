@@ -88,9 +88,9 @@ def train(
                 writer.add_scalar('Losses/Forward', forward_loss, total_steps)
                 writer.add_scalar('Losses/Inverse', inverse_loss, total_steps)
                 writer.add_scalar('Rewards/Intrinsic', intrinsic_reward, total_steps)
-                # writer.add_scalar('Misc/Alpha', agent.alpha, total_steps)
+                writer.add_scalar('Misc/Alpha', agent.alpha, total_steps)
                 # writer.add_scalar('Action/Mean', np.mean(action), total_steps)
-                writer.add_scalar('Action/Std', np.std(action), total_steps)
+                # writer.add_scalar('Action/Std', np.std(action), total_steps)
 
         rolling_rewards.append(episode_reward)
         writer.add_scalar('Rewards/Episode', episode_reward, episode)
@@ -128,7 +128,7 @@ if __name__ == "__main__":
         buffer_capacity = 1_000_000,
     )
 
-    save_dir        = "./checkpoints"
+    save_dir        = "./checkpoints2"
     checkpoint_path = "./checkpoints/episode_{}.pth"
     start_episode, total_steps, log_dir = load_checkpoint(agent, checkpoint_path)
     if start_episode is None:
