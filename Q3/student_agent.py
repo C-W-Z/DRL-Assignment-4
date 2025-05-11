@@ -22,8 +22,7 @@ class Agent(object):
             buffer_capacity = 100,
         )
 
-        checkpoint = torch.load("./checkpoints/episode_3400.pth", weights_only=False)
-        self.agent.load_state_dict(checkpoint['agent_state_dict'], load_replay_buffer=False)
+        self.agent.policy.load_state_dict(torch.load("./final.pth", weights_only=False))
 
     def act(self, observation):
         return self.agent.select_action(observation, evaluate=True)

@@ -7,5 +7,6 @@ drl-hw4
 *.pt
 *.npy
 !final.pt
+!final.pth
 *run*
 *checkpoints*
