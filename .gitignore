@@ -10,3 +10,4 @@ drl-hw4
 !final.pth
 *run*
 *checkpoints*
+*.txt
