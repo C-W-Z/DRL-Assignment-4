@@ -104,8 +104,7 @@ def train(
 
 if __name__ == "__main__":
     import random
-    # seed = np.random.randint(0, 1000000)
-    seed = 42
+    seed = np.random.randint(0, 10000)
     print(f"Seed = {seed}")
     random.seed(seed)
     torch.manual_seed(seed)
@@ -128,7 +127,7 @@ if __name__ == "__main__":
         buffer_capacity = 1_000_000,
     )
 
-    save_dir        = "./checkpoints2"
+    save_dir        = "./checkpoints"
     checkpoint_path = "./checkpoints/episode_{}.pth"
     start_episode, total_steps, log_dir = load_checkpoint(agent, checkpoint_path)
     if start_episode is None:
