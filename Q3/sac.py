@@ -261,12 +261,10 @@ class SAC:
 
         self.q1_optimizer.zero_grad()
         q1_loss.backward()
-        nn.utils.clip_grad_norm_(self.q1.parameters(), 10.0)
         self.q1_optimizer.step()
 
         self.q2_optimizer.zero_grad()
         q2_loss.backward()
-        nn.utils.clip_grad_norm_(self.q2.parameters(), 10.0)
         self.q2_optimizer.step()
 
         # Actor Learn
@@ -279,14 +277,12 @@ class SAC:
 
         self.policy_optimizer.zero_grad()
         policy_loss.backward()
-        nn.utils.clip_grad_norm_(self.policy.parameters(), 10.0)
         self.policy_optimizer.step()
 
         # Entropy Tuning
         alpha_loss = -(self.log_alpha * (log_probs + self.target_entropy).detach()).mean()
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
-        nn.utils.clip_grad_norm_([self.log_alpha], 10.0)
         self.alpha_optimizer.step()
         self.alpha = self.log_alpha.exp()
 
@@ -294,7 +290,6 @@ class SAC:
         icm_loss = self.forward_weight * forward_loss + self.inverse_weight * inverse_loss
         self.icm_optimizer.zero_grad()
         icm_loss.backward()
-        nn.utils.clip_grad_norm_(self.icm.parameters(), 10.0)
         self.icm_optimizer.step()
 
         self.soft_update()

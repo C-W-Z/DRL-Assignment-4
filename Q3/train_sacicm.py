@@ -105,7 +105,7 @@ def train(
 if __name__ == "__main__":
     import random
     # seed = np.random.randint(0, 1000000)
-    seed = 1126
+    seed = 42
     print(f"Seed = {seed}")
     random.seed(seed)
     torch.manual_seed(seed)
