@@ -1,5 +1,3 @@
-import gymnasium as gym
-import numpy as np
 import torch
 from sac import SAC
 
@@ -22,7 +20,13 @@ class Agent(object):
             buffer_capacity = 100,
         )
 
-        self.agent.policy.load_state_dict(torch.load("./final.pth", weights_only=False))
+        self.agent.policy.load_state_dict(
+            torch.load(
+                "./final.pth",
+                weights_only=False,
+                map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            )
+        )
 
     def act(self, observation):
         return self.agent.select_action(observation, evaluate=True)
