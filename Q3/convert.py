@@ -16,6 +16,6 @@ agent = SAC(
     buffer_capacity = 100,
 )
 
-checkpoint = torch.load("./episode_3450.pth", weights_only=False)
+checkpoint = torch.load("./episode_10300.pth", weights_only=False)
 agent.load_state_dict(checkpoint['agent_state_dict'], load_replay_buffer=False)
 torch.save(agent.policy.state_dict(), "final.pth")

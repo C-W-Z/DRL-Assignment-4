@@ -119,7 +119,7 @@ if __name__ == "__main__":
         action_bounds   = (float(env.action_space.low[0]), float(env.action_space.high[0])),
         gamma           = 0.99,
         tau             = 0.005,
-        lr              = 1e-4,
+        lr              = 1e-5, # 1e-4 before 10_000 episode
         alpha           = 0.2,
         icm_eta         = 0.1,
         forward_weight  = 1.0,
@@ -128,7 +128,7 @@ if __name__ == "__main__":
     )
 
     save_dir        = "./checkpoints"
-    checkpoint_path = "./checkpoints/episode_{}.pth"
+    checkpoint_path = "./checkpoints/episode_10000.pth"
     start_episode, total_steps, log_dir = load_checkpoint(agent, checkpoint_path)
     if start_episode is None:
         start_episode = 0
@@ -141,7 +141,7 @@ if __name__ == "__main__":
         env             = env,
         agent           = agent,
         start_episode   = start_episode,
-        max_episodes    = 10_000,
+        max_episodes    = 15_000, # 10_000
         total_steps     = total_steps,
         batch_size      = 128,
         log_dir         = log_dir,

@@ -194,6 +194,7 @@ class SAC:
         self.gamma  = gamma
         self.tau    = tau
         self.alpha  = alpha
+        self.lr     = lr
 
         # Networks
         self.policy = Actor (state_dim, action_dim, hidden_dim, action_bounds).to(device)
@@ -327,6 +328,7 @@ class SAC:
         self.q2_optimizer       .load_state_dict(state_dict['q2_optimizer_state_dict'])
         self.alpha              = state_dict['alpha']
         self.log_alpha          = state_dict['log_alpha']
+        self.alpha_optimizer    = optim.Adam([self.log_alpha]        , lr=self.lr)
         self.alpha_optimizer    .load_state_dict(state_dict['alpha_optimizer_state_dict'])
         self.icm                .load_state_dict(state_dict['icm'])
         self.icm_optimizer      .load_state_dict(state_dict['icm_optimizer'])
